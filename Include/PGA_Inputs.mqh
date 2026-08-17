@@ -68,7 +68,7 @@ input double            InpMinAtr               = 0.20;            // Minimum AT
 
 input group "=== Spread filter ==="
 input bool              InpUseSpreadFilter      = true;            // Enable max-spread filter
-input int               InpMaxSpreadPoints      = 50;              // Maximum allowed spread (points)
+input int               InpMaxSpreadPoints      = 300;             // Maximum allowed spread (points)
 
 input group "=== Session filter (GMT) ==="
 input bool              InpUseSessionFilter     = true;            // Enable London/NY session filter

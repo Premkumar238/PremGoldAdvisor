@@ -116,9 +116,15 @@ void OnTick()
          g_status = "Scanning";
      }
 
-   PgaDashboardUpdate();
-   PgaSaveState();
-   ChartRedraw(0);
+   bool inTester = (bool)MQLInfoInteger(MQL_TESTER);
+   bool visual   = (bool)MQLInfoInteger(MQL_VISUAL_MODE);
+   if(!inTester || visual)
+     {
+      PgaDashboardUpdate();
+      ChartRedraw(0);
+     }
+   if(!inTester)
+      PgaSaveState();
   }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,
