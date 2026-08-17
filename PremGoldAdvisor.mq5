@@ -13,7 +13,9 @@
 //|  Compile in MetaEditor to produce PremGoldAdvisor.ex5.           |
 //|  Copy this folder to: MQL5/Experts/PremGoldAdvisor/              |
 //+------------------------------------------------------------------+
-#property copyright "PremGoldAdvisor"
+// For educational purpose
+
+#property copyright"PremGoldAdvisor"
 #property link      ""
 #property version   "1.00"
 #property description "XAUUSD M1 advisor: Stochastic(8,3,3) with modular EMA/ADX/ATR/session/news/spread filters."
@@ -159,9 +161,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    g_lastCloseTime = TimeCurrent();
    g_managedTicket = 0;
    g_trailActive   = false;
-   PgaSaveState();
-  }
-
+   PgaSaveState();}
+  
 double OnTester()
   {
    // Custom metric: net profit / (1 + max relative drawdown).
