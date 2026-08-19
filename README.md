@@ -55,10 +55,10 @@ MQL5/Experts/PremGoldAdvisor/
 
 **Exits**
 
-- Primary: Stochastic reaches 50
-- Stop loss: 30 pips (configurable)
-- Take profit: `1.8 × ATR`, larger in strong ADX trends, smaller when ADX is closer to ranging
-- Trailing: activate after ~1×ATR profit, trail ~1×ATR, tighten if ADX weakens or Stochastic nears 50
+- Optional: Stochastic reaches 50 (off by default on live preset)
+- Stop loss: 80 pips (configurable)
+- Take profit: `1.5 × ATR`, larger in strong ADX trends, smaller when ADX is closer to ranging
+- Trailing: activate after ~0.6×ATR profit, trail ~0.8×ATR, tighten if ADX weakens or Stochastic nears 50
 
 **Risk**
 
@@ -71,7 +71,27 @@ MQL5/Experts/PremGoldAdvisor/
 
 ## Pip size on Gold
 
-Default pip size is **0.10**, so **30 pips = $3.00**. If your broker or your own definition treats $1.00 as one pip, set pip mode to Manual and pip size to `1.0` (then 30 pips = $30.00).
+Default pip size is **0.10**, so **80 pips = $8.00**. If your broker or your own definition treats $1.00 as one pip, set pip mode to Manual and pip size to `1.0` (then 80 pips = $80.00).
+
+## Live defaults (v1.0 preset)
+
+Tuned for more realistic live/demo entries on XAUUSD M1:
+
+| Setting | Default |
+|---|---|
+| Buy zone | 5–20 |
+| Sell zone | 80–95 |
+| ADX minimum | 20 |
+| Session (GMT) | 12:00–16:00 (London/NY overlap) |
+| Max spread | 300 points |
+| News filter | Off |
+| ATR volatility filter | Off |
+| Stop loss | 80 pips |
+| Stochastic exit at 50 | Off |
+
+**Buy still requires:** Stochastic cross in buy zone, price above EMA 200, ADX ≥ 20, inside session, spread OK.
+
+After updating source files, recompile in MetaEditor (F7), remove the EA from the chart, and attach it again. Click **Reset** on the Inputs tab if old values remain.
 
 ## News filter
 

@@ -44,8 +44,8 @@ input int               InpStochK               = 8;               // %K period
 input int               InpStochD               = 3;               // %D period
 input int               InpStochSlowing         = 3;               // Slowing
 input double            InpBuyZoneLow           = 5.0;             // Buy zone low
-input double            InpBuyZoneHigh          = 10.0;            // Buy zone high
-input double            InpSellZoneLow          = 90.0;            // Sell zone low
+input double            InpBuyZoneHigh          = 20.0;            // Buy zone high
+input double            InpSellZoneLow          = 80.0;            // Sell zone low
 input double            InpSellZoneHigh         = 95.0;            // Sell zone high
 input double            InpExitLevel            = 50.0;            // Primary exit (Stochastic)
 
@@ -57,14 +57,14 @@ input ENUM_APPLIED_PRICE InpEmaPrice            = PRICE_CLOSE;     // EMA applie
 input group "=== Trend strength (ADX) ==="
 input bool              InpUseAdxFilter         = true;            // Enable ADX filter
 input int               InpAdxPeriod            = 14;              // ADX period
-input double            InpAdxMin               = 25.0;            // Minimum ADX to trade
+input double            InpAdxMin               = 20.0;            // Minimum ADX to trade
 input double            InpAdxStrong            = 40.0;            // Strong-trend ADX (wider TP)
 input double            InpAdxRange             = 28.0;            // Ranging ADX ceiling (smaller TP)
 
 input group "=== Volatility (ATR) ==="
-input bool              InpUseAtrFilter         = true;            // Enable ATR volatility filter
+input bool              InpUseAtrFilter         = false;           // Enable ATR volatility filter
 input int               InpAtrPeriod            = 14;              // ATR period
-input double            InpMinAtr               = 0.20;            // Minimum ATR (price) to allow entries
+input double            InpMinAtr               = 0.10;            // Minimum ATR (price) to allow entries
 
 input group "=== Spread filter ==="
 input bool              InpUseSpreadFilter      = true;            // Enable max-spread filter
@@ -72,15 +72,15 @@ input int               InpMaxSpreadPoints      = 300;             // Maximum al
 
 input group "=== Session filter (GMT) ==="
 input bool              InpUseSessionFilter     = true;            // Enable London/NY session filter
-input int               InpLondonStartHour      = 7;               // London start hour (GMT)
+input int               InpLondonStartHour      = 12;              // London start hour (GMT)
 input int               InpLondonEndHour        = 16;              // London end hour (GMT, exclusive)
 input int               InpNewYorkStartHour     = 12;              // New York start hour (GMT)
-input int               InpNewYorkEndHour       = 21;              // New York end hour (GMT, exclusive)
+input int               InpNewYorkEndHour       = 16;              // New York end hour (GMT, exclusive)
 input bool              InpUseFridayCutoff      = true;            // Stop new entries late Friday
 input int               InpFridayCutoffHourGmt  = 19;              // Friday cutoff hour (GMT)
 
 input group "=== News filter (USD) ==="
-input bool              InpUseNewsFilter        = true;            // Enable high-impact USD news filter
+input bool              InpUseNewsFilter        = false;           // Enable high-impact USD news filter
 input ENUM_NEWS_IMPORTANCE InpNewsImportance    = NEWS_IMP_HIGH;   // Minimum news importance
 input int               InpNewsMinutesBefore    = 30;              // Minutes before event to block
 input int               InpNewsMinutesAfter     = 15;              // Minutes after event to block
@@ -88,17 +88,17 @@ input ENUM_NEWS_FAIL_MODE InpNewsFailMode       = NEWS_FAIL_ALLOW; // If calenda
 input string            InpNewsCurrencies       = "USD";           // Currencies to watch (comma-separated)
 
 input group "=== Stops and targets ==="
-input double            InpSLPips               = 30.0;            // Stop loss (pips)
-input double            InpTPAtrMultiplier      = 1.8;             // Base TP = multiplier × ATR
+input double            InpSLPips               = 80.0;            // Stop loss (pips)
+input double            InpTPAtrMultiplier      = 1.5;             // Base TP = multiplier × ATR
 input double            InpTPTrendBoost         = 1.30;            // TP boost in strong trends
 input double            InpTPRangeCut           = 0.70;            // TP cut in ranging markets
 input bool              InpUseDynamicTP         = true;            // Enable ATR-based take profit
-input bool              InpUseStochExit         = true;            // Close when Stochastic reaches exit level
+input bool              InpUseStochExit         = false;           // Close when Stochastic reaches exit level
 
 input group "=== ATR trailing stop ==="
 input bool              InpUseTrailingStop      = true;            // Enable ATR trailing stop
-input double            InpTrailActivateATR     = 1.0;             // Activate after profit of X × ATR
-input double            InpTrailDistanceATR     = 1.0;             // Trail distance in ATR
+input double            InpTrailActivateATR     = 0.6;             // Activate after profit of X × ATR
+input double            InpTrailDistanceATR     = 0.8;             // Trail distance in ATR
 input double            InpTrailTightenFactor   = 0.50;            // Tighten factor when conditions met
 input double            InpTrailTightenStochGap = 10.0;            // Tighten when Stoch is this close to exit
 
@@ -107,7 +107,7 @@ input ENUM_LOT_MODE     InpLotMode              = LOT_FIXED;       // Lot sizing
 input double            InpFixedLot             = 0.01;            // Fixed lot (default)
 input double            InpRiskPercent          = 3.0;             // Risk percent (if Risk percent mode)
 input double            InpMarginBuffer         = 1.20;            // Required margin × this must be free
-input int               InpCooldownSeconds      = 600;             // Minimum seconds between trades
+input int               InpCooldownSeconds      = 300;             // Minimum seconds between trades
 input double            InpMaxDailyLossPercent  = 0.0;             // Max daily loss % (0 = disabled)
 input double            InpMaxDrawdownPercent   = 0.0;             // Max equity drawdown % (0 = disabled)
 
