@@ -1,0 +1,29 @@
+; PremGoldAdvisor V1.80 — XAUUSD M5
+; Same 10+10 STEEV process on 5-minute chart
+; Close ALL only when net floating profit >= $0.50, then place a new 10+10
+; Opposite pending side is cancelled after a fill so the cycle is not flattened at a loss
+;
+InpLotSize=0.01
+InpLevels=10
+InpGridStep=0.30
+InpFirstDistance=0.30
+InpBasketStopLossUSD=0.00
+InpMinCloseProfitUSD=0.50
+InpMaxCyclesPerBar=2
+InpMaxHoldSeconds=0
+InpBreakevenPips=20
+InpTrailingPips=30
+InpMaxSpread=0.80
+InpRequireM5=true
+InpStartHour=0
+InpEndHour=23
+InpCloseOnFriday=false
+InpFridayCloseHour=21
+InpMagic=110110
+InpDeviationPoints=30
+InpMaxRetries=3
+InpComment=PGA-V1.1
+InpShowPanel=true
+InpPanelX=12
+InpPanelY=18
+InpApplyChartTheme=true
