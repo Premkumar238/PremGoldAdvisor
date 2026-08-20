@@ -83,6 +83,7 @@ input double            InpTp2ClosePercent      = 25.0;     // Close % at TP2
 input double            InpTp3ClosePercent      = 25.0;     // Close % at TP3
 input int               InpBrokerTpLevel        = 4;        // Broker take-profit level (1-4)
 input bool              InpBreakevenOnTp1       = true;     // Move SL to entry when TP1 is touched
+input bool              InpTrailSlToTp1OnTp2    = true;     // Move SL to TP1 when TP2 is touched
 input int               InpBreakevenOffsetPoints = 0;       // Extra points past entry (0 = exact entry / zero)
 
 input group "=== ATR Filter ==="
@@ -142,6 +143,7 @@ double         g_tp[5];               // 1..4 used
 double         g_entryVolume = 0.0;
 bool           g_tpHit[5];
 bool           g_breakevenDone = false;
+bool           g_trailToTp1Done = false;
 bool           g_paused = false;
 bool           g_flattening = false;
 string         g_status = "READY";
@@ -857,6 +859,8 @@ void ManageOpenTrade()
 
    if(g_tpHit[1])
       MoveSlToEntry();
+   if(g_tpHit[2])
+      MoveSlToTp1();
 
    if(InpUsePartialClose)
      {
@@ -869,61 +873,83 @@ void ManageOpenTrade()
 //+------------------------------------------------------------------+
 void MoveSlToEntry()
   {
-   if(!InpBreakevenOnTp1 || g_breakevenDone)
+   if(!InpBreakevenOnTp1)
       return;
+   double offset = InpBreakevenOffsetPoints * g_point;
+   double target = 0.0;
    if(!SelectOurPosition())
       return;
+   bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+   double open = PositionGetDouble(POSITION_PRICE_OPEN);
+   target = isBuy ? NormalizePrice(open + offset) : NormalizePrice(open - offset);
+   MoveStopToPrice(target, g_breakevenDone, "TP1 hit — SL moved to entry");
+  }
+
+//+------------------------------------------------------------------+
+void MoveSlToTp1()
+  {
+   if(!InpTrailSlToTp1OnTp2)
+      return;
+   if(g_tp[1] <= 0.0)
+      return;
+   MoveStopToPrice(NormalizePrice(g_tp[1]), g_trailToTp1Done, "TP2 hit — SL trailed to TP1");
+  }
+
+//+------------------------------------------------------------------+
+bool MoveStopToPrice(const double target, bool &doneFlag, const string action)
+  {
+   if(doneFlag || target <= 0.0)
+      return false;
+   if(!SelectOurPosition())
+      return false;
 
    ulong  ticket = (ulong)PositionGetInteger(POSITION_TICKET);
    bool   isBuy  = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
-   double open   = PositionGetDouble(POSITION_PRICE_OPEN);
    double sl     = PositionGetDouble(POSITION_SL);
    double tp     = PositionGetDouble(POSITION_TP);
    double bid    = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask    = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double offset = InpBreakevenOffsetPoints * g_point;
    double minDist = MinStopDistance();
-   double newSL  = 0.0;
+   double newSL  = NormalizePrice(target);
 
    if(isBuy)
      {
-      newSL = NormalizePrice(open + offset);
       if(sl > 0.0 && newSL <= sl + g_tickSize * 0.5)
         {
-         g_breakevenDone = true;
+         doneFlag = true;
          g_sl = sl;
          SaveState();
-         return;
+         return true;
         }
       if(newSL >= bid || (bid - newSL) < minDist)
-         return;
+         return false;
      }
    else
      {
-      newSL = NormalizePrice(open - offset);
       if(sl > 0.0 && newSL >= sl - g_tickSize * 0.5)
         {
-         g_breakevenDone = true;
+         doneFlag = true;
          g_sl = sl;
          SaveState();
-         return;
+         return true;
         }
       if(newSL <= ask || (newSL - ask) < minDist)
-         return;
+         return false;
      }
 
    if(!g_trade.PositionModify(ticket, newSL, tp))
      {
-      PrintFormat("PremGoldAdvisor V1.2: breakeven modify failed ret=%s",
-                  g_trade.ResultRetcodeDescription());
-      return;
+      PrintFormat("PremGoldAdvisor V1.2: %s failed ret=%s",
+                  action, g_trade.ResultRetcodeDescription());
+      return false;
      }
 
    g_sl = newSL;
-   g_breakevenDone = true;
-   g_lastAction = StringFormat("TP1 hit — SL moved to entry %s", DoubleToString(newSL, g_digits));
+   doneFlag = true;
+   g_lastAction = StringFormat("%s %s", action, DoubleToString(newSL, g_digits));
    Print("PremGoldAdvisor V1.2 ", g_lastAction);
    SaveState();
+   return true;
   }
 
 //+------------------------------------------------------------------+
@@ -976,6 +1002,7 @@ void ResetTpHits()
    for(int i = 0; i < 5; i++)
       g_tpHit[i] = false;
    g_breakevenDone = false;
+   g_trailToTp1Done = false;
   }
 
 //+------------------------------------------------------------------+
@@ -991,9 +1018,15 @@ void RecoverOpenPosition()
    double calcSl = 0.0;
    CalcLevels(isBuy, g_entry, calcSl, g_tp[1], g_tp[2], g_tp[3], g_tp[4]);
    if(isBuy)
-      g_breakevenDone = (g_sl > 0.0 && g_sl >= g_entry - g_tickSize * 0.5);
+     {
+      g_breakevenDone  = (g_sl > 0.0 && g_sl >= g_entry - g_tickSize * 0.5);
+      g_trailToTp1Done = (g_tp[1] > 0.0 && g_sl >= g_tp[1] - g_tickSize * 0.5);
+     }
    else
-      g_breakevenDone = (g_sl > 0.0 && g_sl <= g_entry + g_tickSize * 0.5);
+     {
+      g_breakevenDone  = (g_sl > 0.0 && g_sl <= g_entry + g_tickSize * 0.5);
+      g_trailToTp1Done = (g_tp[1] > 0.0 && g_sl <= g_tp[1] + g_tickSize * 0.5);
+     }
    g_status = isBuy ? "LONG" : "SHORT";
    g_lastAction = "Recovered open position";
   }
@@ -1294,6 +1327,7 @@ void SaveState()
    GlobalVariableSet(GvName("Hit3"), g_tpHit[3] ? 1.0 : 0.0);
    GlobalVariableSet(GvName("Hit4"), g_tpHit[4] ? 1.0 : 0.0);
    GlobalVariableSet(GvName("BE"), g_breakevenDone ? 1.0 : 0.0);
+   GlobalVariableSet(GvName("Trail1"), g_trailToTp1Done ? 1.0 : 0.0);
   }
 
 //+------------------------------------------------------------------+
@@ -1316,6 +1350,7 @@ void LoadState()
    g_tpHit[3]      = (GlobalVariableGet(GvName("Hit3")) > 0.5);
    g_tpHit[4]      = (GlobalVariableGet(GvName("Hit4")) > 0.5);
    g_breakevenDone = (GlobalVariableGet(GvName("BE")) > 0.5);
+   g_trailToTp1Done = (GlobalVariableGet(GvName("Trail1")) > 0.5);
   }
 
 //+------------------------------------------------------------------+

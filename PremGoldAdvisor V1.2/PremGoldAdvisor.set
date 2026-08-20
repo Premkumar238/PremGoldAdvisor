@@ -39,6 +39,7 @@ InpTp2ClosePercent=25.0
 InpTp3ClosePercent=25.0
 InpBrokerTpLevel=4
 InpBreakevenOnTp1=true
+InpTrailSlToTp1OnTp2=true
 InpBreakevenOffsetPoints=0
 InpUseAtrFilter=true
 InpAtrPeriod=14
