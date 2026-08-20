@@ -83,7 +83,7 @@ input double            InpTp2ClosePercent      = 25.0;     // Close % at TP2
 input double            InpTp3ClosePercent      = 25.0;     // Close % at TP3
 input int               InpBrokerTpLevel        = 4;        // Broker take-profit level (1-4)
 input bool              InpBreakevenOnTp1       = true;     // Move SL to entry when TP1 is touched
-input bool              InpTrailSlToTp1OnTp2    = true;     // Move SL to TP1 when TP2 is touched
+input bool              InpTrailSlOnEachTp      = true;     // Trail SL to previous TP as TP2/TP3/TP4 are touched
 input int               InpBreakevenOffsetPoints = 0;       // Extra points past entry (0 = exact entry / zero)
 
 input group "=== ATR Filter ==="
@@ -142,8 +142,7 @@ double         g_sl = 0.0;
 double         g_tp[5];               // 1..4 used
 double         g_entryVolume = 0.0;
 bool           g_tpHit[5];
-bool           g_breakevenDone = false;
-bool           g_trailToTp1Done = false;
+bool           g_trailDone[5];        // 1=SL at entry, 2=SL at TP1, 3=SL at TP2, 4=SL at TP3
 bool           g_paused = false;
 bool           g_flattening = false;
 string         g_status = "READY";
@@ -857,10 +856,7 @@ void ManageOpenTrade()
          g_tpHit[4] = true;
      }
 
-   if(g_tpHit[1])
-      MoveSlToEntry();
-   if(g_tpHit[2])
-      MoveSlToTp1();
+   UpdateTrailingStops();
 
    if(InpUsePartialClose)
      {
@@ -871,28 +867,75 @@ void ManageOpenTrade()
   }
 
 //+------------------------------------------------------------------+
-void MoveSlToEntry()
+int HighestTpHit()
+  {
+   for(int i = 4; i >= 1; i--)
+     {
+      if(g_tpHit[i])
+         return i;
+     }
+   return 0;
+  }
+
+//+------------------------------------------------------------------+
+void UpdateTrailingStops()
+  {
+   int hit = HighestTpHit();
+   if(hit <= 0)
+      return;
+
+   if(hit == 1)
+     {
+      TrailToEntry();
+      return;
+     }
+
+   if(!InpTrailSlOnEachTp)
+     {
+      TrailToEntry();
+      return;
+     }
+
+   double target = g_tp[hit - 1];
+   if(target <= 0.0)
+      return;
+
+   string action = StringFormat("TP%d hit — SL trailed to TP%d", hit, hit - 1);
+   if(MoveStopToPrice(target, g_trailDone[hit], action))
+      MarkTrailDoneUpTo(hit);
+  }
+
+//+------------------------------------------------------------------+
+void TrailToEntry()
   {
    if(!InpBreakevenOnTp1)
       return;
-   double offset = InpBreakevenOffsetPoints * g_point;
-   double target = 0.0;
    if(!SelectOurPosition())
       return;
    bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
    double open = PositionGetDouble(POSITION_PRICE_OPEN);
-   target = isBuy ? NormalizePrice(open + offset) : NormalizePrice(open - offset);
-   MoveStopToPrice(target, g_breakevenDone, "TP1 hit — SL moved to entry");
+   double offset = InpBreakevenOffsetPoints * g_point;
+   double target = isBuy ? NormalizePrice(open + offset) : NormalizePrice(open - offset);
+   if(MoveStopToPrice(target, g_trailDone[1], "TP1 hit — SL moved to entry"))
+      MarkTrailDoneUpTo(1);
   }
 
 //+------------------------------------------------------------------+
-void MoveSlToTp1()
+void MarkTrailDoneUpTo(const int level)
   {
-   if(!InpTrailSlToTp1OnTp2)
-      return;
-   if(g_tp[1] <= 0.0)
-      return;
-   MoveStopToPrice(NormalizePrice(g_tp[1]), g_trailToTp1Done, "TP2 hit — SL trailed to TP1");
+   int last = MathMax(1, MathMin(4, level));
+   for(int i = 1; i <= last; i++)
+      g_trailDone[i] = true;
+  }
+
+//+------------------------------------------------------------------+
+bool StopAlreadyAtOrBeyond(const bool isBuy, const double sl, const double target)
+  {
+   if(sl <= 0.0 || target <= 0.0)
+      return false;
+   if(isBuy)
+      return (sl >= target - g_tickSize * 0.5);
+   return (sl <= target + g_tickSize * 0.5);
   }
 
 //+------------------------------------------------------------------+
@@ -1000,9 +1043,10 @@ void TryPartial(const int level, const double percent)
 void ResetTpHits()
   {
    for(int i = 0; i < 5; i++)
+     {
       g_tpHit[i] = false;
-   g_breakevenDone = false;
-   g_trailToTp1Done = false;
+      g_trailDone[i] = false;
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -1017,16 +1061,16 @@ void RecoverOpenPosition()
    g_entryVolume = PositionGetDouble(POSITION_VOLUME);
    double calcSl = 0.0;
    CalcLevels(isBuy, g_entry, calcSl, g_tp[1], g_tp[2], g_tp[3], g_tp[4]);
-   if(isBuy)
-     {
-      g_breakevenDone  = (g_sl > 0.0 && g_sl >= g_entry - g_tickSize * 0.5);
-      g_trailToTp1Done = (g_tp[1] > 0.0 && g_sl >= g_tp[1] - g_tickSize * 0.5);
-     }
-   else
-     {
-      g_breakevenDone  = (g_sl > 0.0 && g_sl <= g_entry + g_tickSize * 0.5);
-      g_trailToTp1Done = (g_tp[1] > 0.0 && g_sl <= g_tp[1] + g_tickSize * 0.5);
-     }
+   for(int i = 0; i < 5; i++)
+      g_trailDone[i] = false;
+   double bePrice = g_entry;
+   if(InpBreakevenOffsetPoints != 0)
+      bePrice = isBuy ? (g_entry + InpBreakevenOffsetPoints * g_point)
+                      : (g_entry - InpBreakevenOffsetPoints * g_point);
+   g_trailDone[1] = StopAlreadyAtOrBeyond(isBuy, g_sl, bePrice);
+   g_trailDone[2] = StopAlreadyAtOrBeyond(isBuy, g_sl, g_tp[1]);
+   g_trailDone[3] = StopAlreadyAtOrBeyond(isBuy, g_sl, g_tp[2]);
+   g_trailDone[4] = StopAlreadyAtOrBeyond(isBuy, g_sl, g_tp[3]);
    g_status = isBuy ? "LONG" : "SHORT";
    g_lastAction = "Recovered open position";
   }
@@ -1326,8 +1370,10 @@ void SaveState()
    GlobalVariableSet(GvName("Hit2"), g_tpHit[2] ? 1.0 : 0.0);
    GlobalVariableSet(GvName("Hit3"), g_tpHit[3] ? 1.0 : 0.0);
    GlobalVariableSet(GvName("Hit4"), g_tpHit[4] ? 1.0 : 0.0);
-   GlobalVariableSet(GvName("BE"), g_breakevenDone ? 1.0 : 0.0);
-   GlobalVariableSet(GvName("Trail1"), g_trailToTp1Done ? 1.0 : 0.0);
+   GlobalVariableSet(GvName("BE"), g_trailDone[1] ? 1.0 : 0.0);
+   GlobalVariableSet(GvName("Trail1"), g_trailDone[2] ? 1.0 : 0.0);
+   GlobalVariableSet(GvName("Trail2"), g_trailDone[3] ? 1.0 : 0.0);
+   GlobalVariableSet(GvName("Trail3"), g_trailDone[4] ? 1.0 : 0.0);
   }
 
 //+------------------------------------------------------------------+
@@ -1349,8 +1395,10 @@ void LoadState()
    g_tpHit[2]      = (GlobalVariableGet(GvName("Hit2")) > 0.5);
    g_tpHit[3]      = (GlobalVariableGet(GvName("Hit3")) > 0.5);
    g_tpHit[4]      = (GlobalVariableGet(GvName("Hit4")) > 0.5);
-   g_breakevenDone = (GlobalVariableGet(GvName("BE")) > 0.5);
-   g_trailToTp1Done = (GlobalVariableGet(GvName("Trail1")) > 0.5);
+   g_trailDone[1] = (GlobalVariableGet(GvName("BE")) > 0.5);
+   g_trailDone[2] = (GlobalVariableGet(GvName("Trail1")) > 0.5);
+   g_trailDone[3] = (GlobalVariableGet(GvName("Trail2")) > 0.5);
+   g_trailDone[4] = (GlobalVariableGet(GvName("Trail3")) > 0.5);
   }
 
 //+------------------------------------------------------------------+
