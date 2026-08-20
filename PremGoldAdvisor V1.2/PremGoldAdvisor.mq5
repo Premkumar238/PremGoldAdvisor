@@ -82,7 +82,6 @@ input double            InpTp1ClosePercent      = 25.0;     // Close % at TP1
 input double            InpTp2ClosePercent      = 25.0;     // Close % at TP2
 input double            InpTp3ClosePercent      = 25.0;     // Close % at TP3
 input int               InpBrokerTpLevel        = 4;        // Broker take-profit level (1-4)
-input bool              InpCloseOnSlProfit      = true;     // Close the full trade when profit equals SL (TP1)
 input bool              InpBreakevenOnTp1       = true;     // Move SL to entry when TP1 is touched
 input bool              InpTrailSlOnEachTp      = true;     // Trail SL to previous TP as TP2/TP3/TP4 are touched
 input int               InpBreakevenOffsetPoints = 0;       // Extra points past entry (0 = exact entry / zero)
@@ -774,8 +773,6 @@ void CalcLevels(const bool isBuy, const double entry,
 //+------------------------------------------------------------------+
 double BrokerTp()
   {
-   if(InpCloseOnSlProfit)
-      return g_tp[1];
    int lvl = InpBrokerTpLevel;
    if(lvl < 1)
       lvl = 1;
@@ -857,15 +854,6 @@ void ManageOpenTrade()
          g_tpHit[3] = true;
       if(low <= g_tp[4] || ask <= g_tp[4])
          g_tpHit[4] = true;
-     }
-
-   if(InpCloseOnSlProfit && g_tpHit[1])
-     {
-      g_lastAction = "TP1 hit — profit equals SL, trade closed";
-      CloseAllPositions("TP1 1R close");
-      g_lastCloseTime = TimeCurrent();
-      SaveState();
-      return;
      }
 
    UpdateTrailingStops();
