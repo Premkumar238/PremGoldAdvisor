@@ -82,6 +82,8 @@ input double            InpTp1ClosePercent      = 25.0;     // Close % at TP1
 input double            InpTp2ClosePercent      = 25.0;     // Close % at TP2
 input double            InpTp3ClosePercent      = 25.0;     // Close % at TP3
 input int               InpBrokerTpLevel        = 4;        // Broker take-profit level (1-4)
+input bool              InpBreakevenOnTp1       = true;     // Move SL to entry when TP1 is touched
+input int               InpBreakevenOffsetPoints = 0;       // Extra points past entry (0 = exact entry / zero)
 
 input group "=== ATR Filter ==="
 input bool              InpUseAtrFilter         = true;     // Enable ATR filter
@@ -139,6 +141,7 @@ double         g_sl = 0.0;
 double         g_tp[5];               // 1..4 used
 double         g_entryVolume = 0.0;
 bool           g_tpHit[5];
+bool           g_breakevenDone = false;
 bool           g_paused = false;
 bool           g_flattening = false;
 string         g_status = "READY";
@@ -852,12 +855,75 @@ void ManageOpenTrade()
          g_tpHit[4] = true;
      }
 
+   if(g_tpHit[1])
+      MoveSlToEntry();
+
    if(InpUsePartialClose)
      {
       TryPartial(1, InpTp1ClosePercent);
       TryPartial(2, InpTp2ClosePercent);
       TryPartial(3, InpTp3ClosePercent);
      }
+  }
+
+//+------------------------------------------------------------------+
+void MoveSlToEntry()
+  {
+   if(!InpBreakevenOnTp1 || g_breakevenDone)
+      return;
+   if(!SelectOurPosition())
+      return;
+
+   ulong  ticket = (ulong)PositionGetInteger(POSITION_TICKET);
+   bool   isBuy  = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+   double open   = PositionGetDouble(POSITION_PRICE_OPEN);
+   double sl     = PositionGetDouble(POSITION_SL);
+   double tp     = PositionGetDouble(POSITION_TP);
+   double bid    = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask    = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double offset = InpBreakevenOffsetPoints * g_point;
+   double minDist = MinStopDistance();
+   double newSL  = 0.0;
+
+   if(isBuy)
+     {
+      newSL = NormalizePrice(open + offset);
+      if(sl > 0.0 && newSL <= sl + g_tickSize * 0.5)
+        {
+         g_breakevenDone = true;
+         g_sl = sl;
+         SaveState();
+         return;
+        }
+      if(newSL >= bid || (bid - newSL) < minDist)
+         return;
+     }
+   else
+     {
+      newSL = NormalizePrice(open - offset);
+      if(sl > 0.0 && newSL >= sl - g_tickSize * 0.5)
+        {
+         g_breakevenDone = true;
+         g_sl = sl;
+         SaveState();
+         return;
+        }
+      if(newSL <= ask || (newSL - ask) < minDist)
+         return;
+     }
+
+   if(!g_trade.PositionModify(ticket, newSL, tp))
+     {
+      PrintFormat("PremGoldAdvisor V1.2: breakeven modify failed ret=%s",
+                  g_trade.ResultRetcodeDescription());
+      return;
+     }
+
+   g_sl = newSL;
+   g_breakevenDone = true;
+   g_lastAction = StringFormat("TP1 hit — SL moved to entry %s", DoubleToString(newSL, g_digits));
+   Print("PremGoldAdvisor V1.2 ", g_lastAction);
+   SaveState();
   }
 
 //+------------------------------------------------------------------+
@@ -909,6 +975,7 @@ void ResetTpHits()
   {
    for(int i = 0; i < 5; i++)
       g_tpHit[i] = false;
+   g_breakevenDone = false;
   }
 
 //+------------------------------------------------------------------+
@@ -921,7 +988,12 @@ void RecoverOpenPosition()
    g_entry = PositionGetDouble(POSITION_PRICE_OPEN);
    g_sl = PositionGetDouble(POSITION_SL);
    g_entryVolume = PositionGetDouble(POSITION_VOLUME);
-   CalcLevels(isBuy, g_entry, g_sl, g_tp[1], g_tp[2], g_tp[3], g_tp[4]);
+   double calcSl = 0.0;
+   CalcLevels(isBuy, g_entry, calcSl, g_tp[1], g_tp[2], g_tp[3], g_tp[4]);
+   if(isBuy)
+      g_breakevenDone = (g_sl > 0.0 && g_sl >= g_entry - g_tickSize * 0.5);
+   else
+      g_breakevenDone = (g_sl > 0.0 && g_sl <= g_entry + g_tickSize * 0.5);
    g_status = isBuy ? "LONG" : "SHORT";
    g_lastAction = "Recovered open position";
   }
@@ -1221,6 +1293,7 @@ void SaveState()
    GlobalVariableSet(GvName("Hit2"), g_tpHit[2] ? 1.0 : 0.0);
    GlobalVariableSet(GvName("Hit3"), g_tpHit[3] ? 1.0 : 0.0);
    GlobalVariableSet(GvName("Hit4"), g_tpHit[4] ? 1.0 : 0.0);
+   GlobalVariableSet(GvName("BE"), g_breakevenDone ? 1.0 : 0.0);
   }
 
 //+------------------------------------------------------------------+
@@ -1242,6 +1315,7 @@ void LoadState()
    g_tpHit[2]      = (GlobalVariableGet(GvName("Hit2")) > 0.5);
    g_tpHit[3]      = (GlobalVariableGet(GvName("Hit3")) > 0.5);
    g_tpHit[4]      = (GlobalVariableGet(GvName("Hit4")) > 0.5);
+   g_breakevenDone = (GlobalVariableGet(GvName("BE")) > 0.5);
   }
 
 //+------------------------------------------------------------------+
