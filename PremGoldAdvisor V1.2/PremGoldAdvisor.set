@@ -38,6 +38,7 @@ InpTp1ClosePercent=25.0
 InpTp2ClosePercent=25.0
 InpTp3ClosePercent=25.0
 InpBrokerTpLevel=4
+InpCloseOnSlProfit=true
 InpBreakevenOnTp1=true
 InpTrailSlOnEachTp=true
 InpBreakevenOffsetPoints=0
