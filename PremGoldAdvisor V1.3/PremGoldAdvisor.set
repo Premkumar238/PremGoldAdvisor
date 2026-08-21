@@ -1,4 +1,4 @@
-; PremGoldAdvisor V1.3 default settings (XAUUSD M5)
+; PremGoldAdvisor V1.3 — touch-entry dual ladder (XAUUSD M5)
 InpTradeEnabled=true
 InpLotSize=0.01
 InpMagic=130213
@@ -7,14 +7,19 @@ InpMaxRetries=3
 InpComment=PGA-V1.3
 InpWorkTimeframe=5
 InpDistanceMode=0
+InpBuyEntryOffset=0.2
+InpSellEntryOffset=0.2
+InpRequireLeaveFirst=true
 InpTp1=0.5
 InpTp2=1.0
 InpTp3=1.5
 InpTp4=2.0
 InpTp5=2.5
 InpInitialSl=3.0
-InpBreakevenOffsetPoints=0
 InpTrailEnabled=true
+InpBeCompensateSpread=true
+InpCommissionPerLot=0.0
+InpBreakevenExtraPoints=0
 InpAllowStackCycles=false
 InpMaxOpenPositions=50
 InpMaxSpread=0.8

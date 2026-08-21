@@ -1,76 +1,65 @@
 # PremGoldAdvisor V1.3
 
-MetaTrader 5 Expert Advisor: **M5 dual ladder** — on each new 5-minute candle the bot opens **5 Buy + 5 Sell** market orders, each with its own take-profit (TP1–TP5), then trails stop-loss on the remaining side as targets are hit.
+MetaTrader 5 Expert Advisor: **M5 dual ladder with touch entries**.
+
+On each new 5-minute candle the bot **only calculates** Buy and Sell entry levels, then **waits**. It opens a side only when that level is touched.
 
 Compile `PremGoldAdvisor.mq5` in MetaEditor (F7) to produce `PremGoldAdvisor.ex5`.
 
-This EA does **not** guarantee profit. Hedged ladders can lose on the opposite side. Backtest and forward-test on demo before any live use.
+This EA does **not** guarantee profit. Backtest and forward-test on demo before any live use.
 
 ## Install
 
 1. Copy the `PremGoldAdvisor V1.3` folder into `MQL5/Experts/`.
 2. Open `PremGoldAdvisor.mq5` in MetaEditor and compile (F7).
-3. Attach it to an **XAUUSD (Gold)** chart. Prefer an **M5** chart (the EA uses `InpWorkTimeframe = M5` by default even if the chart TF differs).
-4. Allow Algo Trading.
-5. Optional: load `PremGoldAdvisor.set` on the Inputs tab.
+3. Attach to **XAUUSD** (prefer M5 chart). Enable Algo Trading.
+4. Optional: load `PremGoldAdvisor.set`.
 
 ## Strategy
 
-**Entries**
+**Candle open (no orders yet)**
 
-- Trigger: new bar on the working timeframe (default M5).
-- Opens 10 market orders at once: Buy1…Buy5 and Sell1…Sell5.
-- Same candle is never used twice (anti-duplicate).
-- By default, a new cycle waits until previous EA positions are flat (`InpAllowStackCycles = false`). Enable stacking only if you intentionally want overlapping cycles.
+- `Buy level  = M5 Open − BuyEntryOffset`
+- `Sell level = M5 Open + SellEntryOffset`
+- Status becomes **WAITING TOUCH**
 
-**Take-profit ladder**
+**Entries (independent sides)**
 
-Each order gets its own broker TP:
-
-| Order | Take profit |
+| Event | Action |
 |---|---|
-| Buy1 / Sell1 | TP1 |
-| Buy2 / Sell2 | TP2 |
-| Buy3 / Sell3 | TP3 |
-| Buy4 / Sell4 | TP4 |
-| Buy5 / Sell5 | TP5 |
+| Price touches Buy level | Open **5 Buy** orders (TP1–TP5) |
+| Buy level never touched | No Buy orders that candle |
+| Price touches Sell level | Open **5 Sell** orders (TP1–TP5) |
+| Sell level never touched | No Sell orders that candle |
 
-Distances are configurable as **price** (default) or **points**.
+Each side opens at most once per candle. If a level is never touched, that side stays flat.
 
-**Trailing stop (per side, independent)**
+By default `InpRequireLeaveFirst = true` so a level that is already near the market at the candle open must be left first, then retested — avoids instant fills on the open tick.
 
-Example for Buys when price moves up:
+**Stops**
 
-1. TP1 touched → Buy1 closes at TP; remaining Buy SL → **entry (break-even)**
-2. TP2 touched → Buy2 closes at TP; remaining Buy SL → **TP1**
-3. TP3 touched → remaining Buy SL → **TP2**
-4. TP4 touched → remaining Buy SL → **TP3**
-5. TP5 touched → final Buy closes at TP5
+- At open: **protective initial SL** (`InpInitialSl`) — not break-even.
+- After **TP1**: TP1 order closes; remaining 4 get SL at **net break-even** (optional spread + commission compensation).
+- After **TP2**: remaining SL → TP1
+- After **TP3**: remaining SL → TP2
+- After **TP4**: remaining SL → TP3
+- After **TP5**: final order closes; basket complete
 
-Sells use the same logic in reverse. SL never moves backward.
-
-**Initial protective SL**
-
-`InpInitialSl` (default `3.00` price on gold) is placed on every order at open. Set to `0` for no initial SL (higher risk).
+SL never moves backward. Buy and Sell baskets are managed independently.
 
 ## Key inputs
 
 | Setting | Default | Notes |
 |---|---|---|
-| Lot size | 0.01 | Per order (10 × lot per cycle) |
-| Magic | 130213 | Isolates V1.3 from other EAs |
-| TP1…TP5 | 0.50 … 2.50 | Price distance (gold) |
-| Initial SL | 3.00 | Price distance; 0 = none |
-| Max spread | 0.80 | Price units |
-| Allow stack cycles | false | Safer default |
-| Working TF | M5 | Change only if you know why |
+| Buy entry offset | 0.20 | Below M5 open |
+| Sell entry offset | 0.20 | Above M5 open |
+| TP1…TP5 | 0.50 … 2.50 | From fill price |
+| Initial SL | 3.00 | Protective; `0` = none |
+| Compensate spread at BE | true | Net BE after TP1 |
+| Commission per 1.0 lot | 0.0 | Round-turn, account currency |
+| BE extra points | 0 | Extra cushion past net BE |
+| Allow stack cycles | false | Block new basket while same side still open |
 
 ## Panel
 
-On-chart panel shows status, open Buy/Sell counts, TP-hit / trail step, last action, and block reason. **PAUSE** / **CLOSE ALL** buttons included.
-
-## Notes
-
-- Broker stop-level / freeze-level rules are enforced; trail updates retry on the next tick if price is too close.
-- State (ladder levels, trail steps, last opened bar) is stored in terminal global variables so a chart reload can recover.
-- Tune TP distances to your broker’s XAUUSD digit format (2 or 3 digits) and typical M5 range.
+Shows status, armed Buy/Sell levels, open counts, TP-hit / trail step, last action. **PAUSE** / **CLOSE ALL** buttons included.
