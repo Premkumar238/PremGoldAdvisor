@@ -1,65 +1,87 @@
-# PremGoldAdvisor V1.3
+# PremGoldAdvisorV1.3
 
-MetaTrader 5 Expert Advisor: **M5 dual ladder with touch entries**.
+MetaTrader 5 Expert Advisor for **XAUUSD** on the **M5** timeframe.
 
-On each new 5-minute candle the bot **only calculates** Buy and Sell entry levels, then **waits**. It opens a side only when that level is touched.
+**Breakout touch entries:** on each new M5 candle the EA only calculates Buy/Sell entry levels, then waits. It opens a side only when that level is touched (no immediate orders on the open).
 
-Compile `PremGoldAdvisor.mq5` in MetaEditor (F7) to produce `PremGoldAdvisor.ex5`.
+Compile `PremGoldAdvisorV1.3.mq5` in MetaEditor (F7) to produce `PremGoldAdvisorV1.3.ex5`.
 
-This EA does **not** guarantee profit. Backtest and forward-test on demo before any live use.
+This EA does **not** guarantee profit. Backtest and forward-test on demo with realistic spread, commission and slippage before any live use.
 
 ## Install
 
 1. Copy the `PremGoldAdvisor V1.3` folder into `MQL5/Experts/`.
-2. Open `PremGoldAdvisor.mq5` in MetaEditor and compile (F7).
-3. Attach to **XAUUSD** (prefer M5 chart). Enable Algo Trading.
-4. Optional: load `PremGoldAdvisor.set`.
+2. Open `PremGoldAdvisorV1.3.mq5` in MetaEditor and compile (F7).
+3. Attach to **XAUUSD** on an **M5** chart. Enable Algo Trading.
+4. Optional: load `PremGoldAdvisorV1.3.set`.
 
 ## Strategy
 
-**Candle open (no orders yet)**
+**New M5 candle (no orders yet)**
 
-- `Buy level  = M5 Open − BuyEntryOffset`
-- `Sell level = M5 Open + SellEntryOffset`
-- Status becomes **WAITING TOUCH**
+- Record candle open
+- `Buy Entry  = Open + BuyEntryDistance`
+- `Sell Entry = Open − SellEntryDistance`
+- Status → **WAITING TOUCH**
 
-**Entries (independent sides)**
+Example: Open `3400` → Buy `3402`, Sell `3398` (with distance `2.00`).
+
+**Entries**
 
 | Event | Action |
 |---|---|
-| Price touches Buy level | Open **5 Buy** orders (TP1–TP5) |
+| Ask reaches Buy level | Open **5 Buy** orders (TP1–TP5) |
 | Buy level never touched | No Buy orders that candle |
-| Price touches Sell level | Open **5 Sell** orders (TP1–TP5) |
+| Bid reaches Sell level | Open **5 Sell** orders (TP1–TP5) |
 | Sell level never touched | No Sell orders that candle |
 
-Each side opens at most once per candle. If a level is never touched, that side stays flat.
+Each side triggers at most **once per candle**. Baskets are managed independently.
 
-By default `InpRequireLeaveFirst = true` so a level that is already near the market at the candle open must be left first, then retested — avoids instant fills on the open tick.
+`AllowBothDirections`:
 
-**Stops**
+- `true` — Buy and Sell may both trigger on the same candle
+- `false` — after one side triggers, the other is blocked for that candle
 
-- At open: **protective initial SL** (`InpInitialSl`) — not break-even.
-- After **TP1**: TP1 order closes; remaining 4 get SL at **net break-even** (optional spread + commission compensation).
+**Trailing ladder**
+
+- At open: **Initial SL** (or none if `InitialSL = 0` — unlimited risk warning logged)
+- After **TP1**: close TP1 ticket; remaining SL → **net break-even** (+ `BreakEvenBuffer`, optional spread/commission)
 - After **TP2**: remaining SL → TP1
 - After **TP3**: remaining SL → TP2
 - After **TP4**: remaining SL → TP3
-- After **TP5**: final order closes; basket complete
+- After **TP5**: basket complete
 
-SL never moves backward. Buy and Sell baskets are managed independently.
+SL only moves in the protective direction (never backward).
 
 ## Key inputs
 
 | Setting | Default | Notes |
 |---|---|---|
-| Buy entry offset | 0.20 | Below M5 open |
-| Sell entry offset | 0.20 | Above M5 open |
+| Buy entry distance | 2.00 | Above M5 open |
+| Sell entry distance | 2.00 | Below M5 open |
+| Allow both directions | true | Independent Buy/Sell triggers |
+| Enable Buy / Enable Sell | true | Per-side master switches |
 | TP1…TP5 | 0.50 … 2.50 | From fill price |
-| Initial SL | 3.00 | Protective; `0` = none |
-| Compensate spread at BE | true | Net BE after TP1 |
-| Commission per 1.0 lot | 0.0 | Round-turn, account currency |
-| BE extra points | 0 | Extra cushion past net BE |
-| Allow stack cycles | false | Block new basket while same side still open |
+| Initial SL | 5.00 | Protective; `0` = none (unlimited risk) |
+| Break-even buffer | 0.10 | Extra cushion past net BE |
+| Compensate spread at BE | true | Cover spread at TP1 trail |
+| Max active baskets | 2 | Concurrent Buy/Sell baskets |
+| Max spread | 0.80 | Block new entries if exceeded |
+| Magic number | 130213 | Position identification |
+
+## Restart / reconnection
+
+On init the EA:
+
+- Loads GlobalVariable state
+- Scans open positions by Magic Number
+- Rebuilds TP ladder and trail step
+- Blocks duplicate entries for an already-triggered candle
 
 ## Panel
 
 Shows status, armed Buy/Sell levels, open counts, TP-hit / trail step, last action. **PAUSE** / **CLOSE ALL** buttons included.
+
+## Disclaimer
+
+For **testing and risk management** only. Past backtests do not predict future results. Always validate in the MT5 Strategy Tester before live trading.
