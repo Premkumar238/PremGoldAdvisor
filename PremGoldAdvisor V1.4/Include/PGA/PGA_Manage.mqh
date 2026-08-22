@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| PGA_Manage.mqh — TP hit detection, break-even, trailing SL       |
+//| PGA_Manage.mqh — sequential TP → close → open next stage         |
 //+------------------------------------------------------------------+
 #property copyright "PremGoldAdvisor"
 #property strict
@@ -12,6 +12,7 @@
 #include "PGA_Symbol.mqh"
 #include "PGA_Basket.mqh"
 #include "PGA_Trade.mqh"
+#include "PGA_Risk.mqh"
 
 class CPGAManager
 {
@@ -19,151 +20,238 @@ private:
    CPGASymbol         *m_sym;
    CPGATradeExecutor  *m_exec;
    CPGABasketManager  *m_baskets;
+   CPGARisk           *m_risk;
 
-   double TrailTargetAfterTP(const PGA_Basket &basket, const int tpHit) const
+   bool IsActivePositionOpen(const PGA_Basket &basket) const
    {
-      // After TP1 -> break-even; after TP2 -> TP1; after TP3 -> TP2; after TP4 -> TP3
-      if(tpHit <= 0)
-         return basket.initialSL;
-      if(tpHit == 1)
-         return basket.breakEvenPrice;
-      if(tpHit >= 2 && tpHit <= 4)
-         return basket.tp[tpHit - 1];
-      return basket.currentTrailSL;
+      if(basket.activeTicket == 0)
+         return false;
+      return PositionSelectByTicket(basket.activeTicket);
    }
 
-   void SyncLegClosedFlags(PGA_Basket &basket)
+   bool PriceReachedActiveTP(const PGA_Basket &basket) const
    {
-      for(int slot = 1; slot <= PGA_LEGS_PER_BASKET; slot++)
-      {
-         if(basket.legs[slot].closed)
-            continue;
-         const ulong ticket = basket.legs[slot].ticket;
-         if(ticket == 0 || !PositionSelectByTicket(ticket))
-            basket.legs[slot].closed = true;
-      }
-   }
-
-   bool PriceReachedTP(const PGA_Basket &basket, const int slot) const
-   {
-      const double tp = basket.tp[slot];
-      if(tp <= 0.0)
+      if(basket.activeTP <= 0.0)
          return false;
 
       if(basket.direction == PGA_DIR_BUY)
       {
          const double bid = SymbolInfoDouble(m_sym.SymbolName(), SYMBOL_BID);
-         return (bid + 1.0e-12 >= tp);
+         return (bid + 1.0e-12 >= basket.activeTP);
+      }
+
+      const double ask = SymbolInfoDouble(m_sym.SymbolName(), SYMBOL_ASK);
+      return (ask <= basket.activeTP + 1.0e-12);
+   }
+
+   void ApplyBreakEvenIfNeeded(PGA_Basket &basket)
+   {
+      if(basket.breakEvenApplied || basket.breakEvenBuffer <= 0.0)
+         return;
+      if(!IsActivePositionOpen(basket))
+         return;
+
+      bool reached = false;
+      if(basket.direction == PGA_DIR_BUY)
+      {
+         const double bid = SymbolInfoDouble(m_sym.SymbolName(), SYMBOL_BID);
+         reached = (bid + 1.0e-12 >= basket.activeBreakEven);
       }
       else
       {
          const double ask = SymbolInfoDouble(m_sym.SymbolName(), SYMBOL_ASK);
-         return (ask <= tp + 1.0e-12);
+         reached = (ask <= basket.activeBreakEven + 1.0e-12);
+      }
+
+      if(!reached)
+         return;
+
+      string reason;
+      const ENUM_POSITION_TYPE ptype = (basket.direction == PGA_DIR_BUY)
+                                       ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+      const double curSL = PositionSelectByTicket(basket.activeTicket)
+                           ? PositionGetDouble(POSITION_SL) : basket.activeSL;
+
+      if(!m_sym.CanModifySL(ptype, basket.activeBreakEven, curSL, reason))
+         return;
+
+      if(m_exec.ModifyActiveSL(basket, basket.activeBreakEven))
+      {
+         basket.breakEvenApplied = true;
+         PGA_LogInfo("Break-even applied on " +
+                     (basket.direction == PGA_DIR_BUY ? "BUY" : "SELL") +
+                     " #" + IntegerToString((int)basket.stage) +
+                     " SL=" + DoubleToString(basket.activeBreakEven, m_sym.Digits()));
       }
    }
 
-   void ApplyTrailToRemaining(PGA_Basket &basket, const int fromSlotInclusive, const double newSL)
+   bool WasClosedByTakeProfit(const PGA_Basket &basket, const int stage) const
    {
+      const ulong ticket = basket.legs[stage].ticket;
+      const double tpLevel = basket.legs[stage].takeProfit > 0.0
+                             ? basket.legs[stage].takeProfit
+                             : basket.activeTP;
+
+      if(!HistorySelect(TimeCurrent() - 86400, TimeCurrent() + 60))
+         return false;
+
+      for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+      {
+         const ulong deal = HistoryDealGetTicket(i);
+         if(deal == 0)
+            continue;
+         if(HistoryDealGetInteger(deal, DEAL_MAGIC) != m_baskets.Magic())
+            continue;
+         if(HistoryDealGetString(deal, DEAL_SYMBOL) != m_sym.SymbolName())
+            continue;
+
+         const long entry = HistoryDealGetInteger(deal, DEAL_ENTRY);
+         if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY)
+            continue;
+
+         const ulong dealPosId = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+         if(ticket != 0 && dealPosId != 0 && dealPosId != ticket)
+            continue;
+
+         const long reason = HistoryDealGetInteger(deal, DEAL_REASON);
+         const double closePrice = HistoryDealGetDouble(deal, DEAL_PRICE);
+
+         if(reason == DEAL_REASON_TP)
+            return true;
+
+         if(tpLevel > 0.0 && MathAbs(closePrice - tpLevel) <= m_sym.TickSize() * 5.0)
+            return true;
+      }
+      return false;
+   }
+
+   // Returns true only when TP event is confirmed AND position is fully closed.
+   bool ProcessStageTP(PGA_Basket &basket)
+   {
+      const int stage = (int)basket.stage;
+      if(stage < 1 || stage > PGA_LEGS_PER_BASKET)
+         return false;
+
+      const bool open = IsActivePositionOpen(basket);
+      const bool priceHit = PriceReachedActiveTP(basket);
+      const string dirLabel = (basket.direction == PGA_DIR_BUY) ? "BUY" : "SELL";
+
+      // Still open: close only when price touches TP, then confirm closed
+      if(open)
+      {
+         ApplyBreakEvenIfNeeded(basket);
+
+         if(!priceHit)
+            return false;
+
+         PGA_LogInfo("TP" + IntegerToString(stage) + " hit — closing " +
+                     dirLabel + " #" + IntegerToString(stage));
+
+         if(!m_exec.CloseActiveOrder(basket, "TP" + IntegerToString(stage)))
+            return false;
+
+         if(IsActivePositionOpen(basket))
+         {
+            PGA_LogError("TP close not confirmed — will not open next stage yet");
+            return false;
+         }
+
+         PGA_LogInfo("TP" + IntegerToString(stage) + " reached — " +
+                     dirLabel + " #" + IntegerToString(stage) + " closed successfully");
+         return true;
+      }
+
+      // Position already gone (broker TP/SL). Confirm it was a TP before progressing.
+      const bool tpConfirmed = priceHit || WasClosedByTakeProfit(basket, stage);
+
+      basket.legs[stage].closed = true;
+      basket.activeTicket = 0;
+
+      if(!tpConfirmed)
+      {
+         PGA_LogWarn(dirLabel + " #" + IntegerToString(stage) +
+                     " closed without TP confirmation — sequence stopped");
+         m_baskets.MarkComplete(basket);
+         return false;
+      }
+
+      PGA_LogInfo("TP" + IntegerToString(stage) + " reached — " +
+                  dirLabel + " #" + IntegerToString(stage) + " closed successfully");
+      return true;
+   }
+
+   void OpenNextOrComplete(PGA_Basket &basket)
+   {
+      const int finishedStage = (int)basket.stage;
+
+      if(finishedStage >= PGA_LEGS_PER_BASKET)
+      {
+         m_baskets.MarkComplete(basket);
+         return;
+      }
+
+      // Risk checks before opening next sequential order
       string reason;
-      for(int slot = fromSlotInclusive; slot <= PGA_LEGS_PER_BASKET; slot++)
+      if(m_risk != NULL && !m_risk.IsSpreadOk(reason))
       {
-         if(basket.legs[slot].closed)
-            continue;
-         const ulong ticket = basket.legs[slot].ticket;
-         if(ticket == 0 || !PositionSelectByTicket(ticket))
-         {
-            basket.legs[slot].closed = true;
-            continue;
-         }
-
-         const ENUM_POSITION_TYPE ptype = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-         const double curSL = PositionGetDouble(POSITION_SL);
-
-         if(!m_sym.CanModifySL(ptype, newSL, curSL, reason))
-         {
-            // Not an error if already at/better than target
-            continue;
-         }
-
-         if(m_exec.ModifyLegSL(ticket, newSL))
-         {
-            PGA_LogInfo("Trail SL updated basket=" + IntegerToString((long)basket.id) +
-                        " slot=" + IntegerToString(slot) +
-                        " sl=" + DoubleToString(newSL, m_sym.Digits()));
-         }
+         PGA_LogWarn("Next stage delayed: " + reason);
+         basket.waitingNextOpen = true;
+         m_baskets.UpdateStored(basket);
+         return;
       }
 
-      // Update basket trail only if new SL is strictly more protective
-      if(basket.direction == PGA_DIR_BUY)
+      const int nextStage = finishedStage + 1;
+      PGA_LogInfo("Opening " + (basket.direction == PGA_DIR_BUY ? "BUY" : "SELL") +
+                  " #" + IntegerToString(nextStage) + " after TP" +
+                  IntegerToString(finishedStage));
+
+      if(!m_exec.OpenStageOrder(basket, nextStage))
       {
-         if(newSL > basket.currentTrailSL + 1.0e-12 || basket.currentTrailSL <= 0.0)
-            basket.currentTrailSL = newSL;
+         PGA_LogError("Failed to open stage " + IntegerToString(nextStage) +
+                      " — will retry while sequence active");
+         basket.waitingNextOpen = true;
+         m_baskets.UpdateStored(basket);
+         return;
       }
-      else
-      {
-         if(basket.currentTrailSL <= 0.0 || newSL < basket.currentTrailSL - 1.0e-12)
-            basket.currentTrailSL = newSL;
-      }
+
+      basket.waitingNextOpen = false;
+      m_baskets.UpdateStored(basket);
    }
 
 public:
-   CPGAManager(void) : m_sym(NULL), m_exec(NULL), m_baskets(NULL) {}
+   CPGAManager(void) : m_sym(NULL), m_exec(NULL), m_baskets(NULL), m_risk(NULL) {}
 
-   void Init(CPGASymbol *sym, CPGATradeExecutor *exec, CPGABasketManager *baskets)
+   void Init(CPGASymbol *sym, CPGATradeExecutor *exec, CPGABasketManager *baskets, CPGARisk *risk = NULL)
    {
       m_sym = sym;
       m_exec = exec;
       m_baskets = baskets;
+      m_risk = risk;
    }
 
    void ManageBasket(PGA_Basket &basket)
    {
       if(!basket.inUse || basket.state != PGA_BASKET_ACTIVE)
          return;
+      if(basket.stage == PGA_STAGE_COMPLETE || basket.stage == PGA_STAGE_NONE)
+         return;
 
-      SyncLegClosedFlags(basket);
-
-      // Process TP levels in order 1..5
-      for(int level = 1; level <= PGA_LEGS_PER_BASKET; level++)
+      // Retry pending next-stage open (previous TP already confirmed)
+      if(basket.waitingNextOpen && !IsActivePositionOpen(basket))
       {
-         if(basket.highestTPHit >= level)
-            continue;
-
-         const bool priceHit = PriceReachedTP(basket, level);
-         const bool legGone  = basket.legs[level].closed;
-
-         // Wait until this TP is touched or the leg has already been closed (broker TP)
-         if(!priceHit && !legGone)
-            break;
-
-         if(priceHit && !legGone)
-            m_exec.CloseLeg(basket, level, "TP" + IntegerToString(level));
-
-         SyncLegClosedFlags(basket);
-
-         // Progress when price touched TP, or leg closed by broker TakeProfit
-         if(!priceHit && !basket.legs[level].closed)
-            break;
-
-         basket.highestTPHit = level;
-         const double trailSL = m_sym.NormalizePrice(TrailTargetAfterTP(basket, level));
-
-         if(level < PGA_LEGS_PER_BASKET)
-         {
-            PGA_LogInfo("TP" + IntegerToString(level) + " reached basket=" +
-                        IntegerToString((long)basket.id) +
-                        " -> trail remaining to " + DoubleToString(trailSL, m_sym.Digits()));
-            ApplyTrailToRemaining(basket, level + 1, trailSL);
-         }
-         else
-         {
-            PGA_LogInfo("TP5 reached basket=" + IntegerToString((long)basket.id));
-         }
+         OpenNextOrComplete(basket);
+         return;
       }
 
-      SyncLegClosedFlags(basket);
-      m_baskets.MarkDoneIfComplete(basket);
-      m_baskets.UpdateStored(basket);
+      // Wait for current stage TP → close confirmed → open next
+      if(!ProcessStageTP(basket))
+      {
+         m_baskets.UpdateStored(basket);
+         return;
+      }
+
+      // TP confirmed and position closed — open next stage only now
+      OpenNextOrComplete(basket);
    }
 
    void ManageAll(void)

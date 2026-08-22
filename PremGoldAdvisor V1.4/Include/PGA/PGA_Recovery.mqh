@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| PGA_Recovery.mqh — rebuild baskets after MT5 / EA restart        |
+//| PGA_Recovery.mqh — rebuild sequential state after restart        |
 //+------------------------------------------------------------------+
 #property copyright "PremGoldAdvisor"
 #property strict
@@ -22,14 +22,6 @@ private:
    double             m_tpDist[6];
    double             m_initialSLDistance;
    double             m_breakEvenBuffer;
-
-   double TrailAfter(const PGA_Basket &b, const int tpHit) const
-   {
-      if(tpHit <= 0) return b.initialSL;
-      if(tpHit == 1) return b.breakEvenPrice;
-      if(tpHit >= 2 && tpHit <= 4) return b.tp[tpHit - 1];
-      return b.currentTrailSL;
-   }
 
 public:
    CPGARecovery(void)
@@ -67,7 +59,6 @@ public:
       const long magic = m_baskets.Magic();
       const string symbol = m_baskets.SymbolName();
 
-      // Map basketId -> provisional basket
       PGA_Basket temp[PGA_MAX_BASKETS];
       int tempCount = 0;
       for(int i = 0; i < PGA_MAX_BASKETS; i++)
@@ -104,11 +95,12 @@ public:
                break;
             }
          }
+
          if(tIdx < 0)
          {
             if(tempCount >= PGA_MAX_BASKETS)
             {
-               PGA_LogError("Recovery basket overflow");
+               PGA_LogError("Recovery sequence overflow");
                continue;
             }
             tIdx = tempCount++;
@@ -118,78 +110,75 @@ public:
             temp[tIdx].state = PGA_BASKET_ACTIVE;
             temp[tIdx].direction = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
                                    ? PGA_DIR_BUY : PGA_DIR_SELL;
-            temp[tIdx].entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-            temp[tIdx].candleTime = (datetime)(basketId / 10UL); // inverse of MakeBasketId
-            temp[tIdx].highestTPHit = 0;
-
-            // Rebuild TP / SL geometry from entry + configured distances
-            if(temp[tIdx].direction == PGA_DIR_BUY)
-            {
-               for(int s = 1; s <= PGA_LEGS_PER_BASKET; s++)
-                  temp[tIdx].tp[s] = m_sym.NormalizePrice(temp[tIdx].entryPrice + m_tpDist[s]);
-               temp[tIdx].initialSL = (m_initialSLDistance > 0.0)
-                                      ? m_sym.NormalizePrice(temp[tIdx].entryPrice - m_initialSLDistance)
-                                      : 0.0;
-               temp[tIdx].breakEvenPrice = m_sym.NormalizePrice(temp[tIdx].entryPrice + m_breakEvenBuffer);
-            }
-            else
-            {
-               for(int s = 1; s <= PGA_LEGS_PER_BASKET; s++)
-                  temp[tIdx].tp[s] = m_sym.NormalizePrice(temp[tIdx].entryPrice - m_tpDist[s]);
-               temp[tIdx].initialSL = (m_initialSLDistance > 0.0)
-                                      ? m_sym.NormalizePrice(temp[tIdx].entryPrice + m_initialSLDistance)
-                                      : 0.0;
-               temp[tIdx].breakEvenPrice = m_sym.NormalizePrice(temp[tIdx].entryPrice - m_breakEvenBuffer);
-            }
-            temp[tIdx].currentTrailSL = temp[tIdx].initialSL;
+            temp[tIdx].candleTime = (datetime)(basketId / 10UL);
+            temp[tIdx].triggerEntryLevel = PositionGetDouble(POSITION_PRICE_OPEN);
+            temp[tIdx].initialSLDistance = m_initialSLDistance;
+            temp[tIdx].breakEvenBuffer = m_breakEvenBuffer;
+            temp[tIdx].waitingNextOpen = false;
+            temp[tIdx].breakEvenApplied = false;
 
             for(int s = 1; s <= PGA_LEGS_PER_BASKET; s++)
             {
+               temp[tIdx].tpDistance[s] = m_tpDist[s];
                temp[tIdx].legs[s].slot = s;
                temp[tIdx].legs[s].ticket = 0;
-               temp[tIdx].legs[s].takeProfit = temp[tIdx].tp[s];
-               temp[tIdx].legs[s].closed = true; // assume closed until found
+               temp[tIdx].legs[s].closed = true;
+               temp[tIdx].legs[s].opened = (s < slot); // prior stages assumed done
+               if(s < slot)
+               {
+                  temp[tIdx].legs[s].opened = true;
+                  temp[tIdx].legs[s].closed = true;
+               }
             }
          }
 
-         temp[tIdx].legs[slot].ticket = ticket;
-         temp[tIdx].legs[slot].closed = false;
-         temp[tIdx].legs[slot].takeProfit = temp[tIdx].tp[slot];
+         // Sequential mode: only ONE live position expected
+         temp[tIdx].stage = (ENUM_PGA_STAGE)slot;
+         temp[tIdx].activeTicket = ticket;
+         temp[tIdx].activeEntry = PositionGetDouble(POSITION_PRICE_OPEN);
+         temp[tIdx].activeTP = PositionGetDouble(POSITION_TP);
+         temp[tIdx].activeSL = PositionGetDouble(POSITION_SL);
 
-         // Prefer broker SL if tighter
-         const double posSL = PositionGetDouble(POSITION_SL);
-         if(posSL > 0.0)
-            temp[tIdx].currentTrailSL = posSL;
+         if(temp[tIdx].direction == PGA_DIR_BUY)
+            temp[tIdx].activeBreakEven = m_sym.NormalizePrice(temp[tIdx].activeEntry + m_breakEvenBuffer);
+         else
+            temp[tIdx].activeBreakEven = m_sym.NormalizePrice(temp[tIdx].activeEntry - m_breakEvenBuffer);
+
+         if(temp[tIdx].activeTP <= 0.0)
+         {
+            if(temp[tIdx].direction == PGA_DIR_BUY)
+               temp[tIdx].activeTP = m_sym.NormalizePrice(temp[tIdx].activeEntry + m_tpDist[slot]);
+            else
+               temp[tIdx].activeTP = m_sym.NormalizePrice(temp[tIdx].activeEntry - m_tpDist[slot]);
+         }
+
+         temp[tIdx].legs[slot].ticket = ticket;
+         temp[tIdx].legs[slot].slot = slot;
+         temp[tIdx].legs[slot].entryPrice = temp[tIdx].activeEntry;
+         temp[tIdx].legs[slot].takeProfit = temp[tIdx].activeTP;
+         temp[tIdx].legs[slot].stopLoss = temp[tIdx].activeSL;
+         temp[tIdx].legs[slot].opened = true;
+         temp[tIdx].legs[slot].closed = false;
       }
 
-      // Infer highest TP hit from missing lower slots
       for(int t = 0; t < tempCount; t++)
       {
-         int inferred = 0;
-         for(int s = 1; s <= PGA_LEGS_PER_BASKET; s++)
-         {
-            if(temp[t].legs[s].closed)
-               inferred = s;
-            else
-               break;
-         }
-         temp[t].highestTPHit = inferred;
-         if(inferred > 0)
-            temp[t].currentTrailSL = m_sym.NormalizePrice(TrailAfter(temp[t], inferred));
+         // If somehow multiple opens for same id, keep highest slot and warn
+         const int live = m_baskets.CountOpenPositionsForBasket(temp[t].id);
+         if(live > 1)
+            PGA_LogWarn("Recovery found " + IntegerToString(live) +
+                        " open orders for sequence " + IntegerToString((long)temp[t].id) +
+                        " (expected max 1)");
 
          m_baskets.UpsertRecoveredBasket(temp[t]);
-         PGA_LogInfo("Recovered basket id=" + IntegerToString((long)temp[t].id) +
+         PGA_LogInfo("Recovered sequence id=" + IntegerToString((long)temp[t].id) +
                      " dir=" + (temp[t].direction == PGA_DIR_BUY ? "BUY" : "SELL") +
-                     " openLegs=" + IntegerToString(CountOpenLegs(temp[t])) +
-                     " highestTP=" + IntegerToString(temp[t].highestTPHit));
+                     " stage=" + CPGABasketManager::StageName(temp[t].stage) +
+                     " ticket=" + IntegerToString(temp[t].activeTicket));
       }
 
-      // Restore candle trigger flags from GV and/or recovered baskets
       if(!m_candle.LoadState(magic))
-      {
-         // Force plan for current candle; triggers inferred from baskets
          m_candle.OnNewCandle();
-      }
 
       if(m_candle.HasValidPlan())
       {
@@ -207,16 +196,7 @@ public:
          m_candle.SaveState(magic);
       }
 
-      PGA_LogInfo("Recovery complete. Active baskets=" + IntegerToString(m_baskets.CountActive()));
-   }
-
-private:
-   int CountOpenLegs(const PGA_Basket &b) const
-   {
-      int n = 0;
-      for(int s = 1; s <= PGA_LEGS_PER_BASKET; s++)
-         if(!b.legs[s].closed) n++;
-      return n;
+      PGA_LogInfo("Recovery complete. Active sequences=" + IntegerToString(m_baskets.CountActive()));
    }
 };
 

@@ -1,5 +1,6 @@
 //+------------------------------------------------------------------+
 //| PGA_Types.mqh — PremGoldAdvisor V1.4 core types                  |
+//| Sequential stage system: only ONE active order per direction.    |
 //+------------------------------------------------------------------+
 #property copyright "PremGoldAdvisor"
 #property strict
@@ -24,28 +25,49 @@ enum ENUM_PGA_BASKET_STATE
    PGA_BASKET_DONE     = 2
 };
 
+// Sequential stages: STAGE_1 .. STAGE_5, then COMPLETE
+enum ENUM_PGA_STAGE
+{
+   PGA_STAGE_NONE     = 0,
+   PGA_STAGE_1        = 1,
+   PGA_STAGE_2        = 2,
+   PGA_STAGE_3        = 3,
+   PGA_STAGE_4        = 4,
+   PGA_STAGE_5        = 5,
+   PGA_STAGE_COMPLETE = 6
+};
+
 struct PGA_Leg
 {
    ulong  ticket;
    int    slot;          // 1..5
+   double entryPrice;
    double takeProfit;
+   double stopLoss;
    bool   closed;
+   bool   opened;        // true once this stage was opened
 };
 
 struct PGA_Basket
 {
-   ulong               id;
-   datetime            candleTime;
-   ENUM_PGA_DIRECTION  direction;
-   double              entryPrice;
-   double              tp[6];          // index 1..5 used
-   double              initialSL;
-   double              breakEvenPrice;
-   double              currentTrailSL;
-   int                 highestTPHit;   // 0 = none, 1..5 = highest TP closed
-   PGA_Leg             legs[6];        // index 1..5 used
+   ulong                 id;
+   datetime              candleTime;
+   ENUM_PGA_DIRECTION    direction;
+   double                triggerEntryLevel; // original level that started the sequence
+   double                tpDistance[6];     // configured TP distances 1..5
+   double                initialSLDistance;
+   double                breakEvenBuffer;
+   ENUM_PGA_STAGE        stage;             // current stage (1..5) or COMPLETE
+   ulong                 activeTicket;      // the ONE open order ticket (0 if none)
+   double                activeEntry;
+   double                activeTP;
+   double                activeSL;
+   double                activeBreakEven;
+   bool                  breakEvenApplied;
+   bool                  waitingNextOpen;   // true after TP close confirmed, before next open done
+   PGA_Leg               legs[6];           // history per stage 1..5
    ENUM_PGA_BASKET_STATE state;
-   bool                inUse;
+   bool                  inUse;
 };
 
 struct PGA_CandlePlan

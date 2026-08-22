@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| PGA_Entry.mqh — touch detection and basket entry orchestration   |
+//| PGA_Entry.mqh — entry touch opens STAGE_1 only                   |
 //+------------------------------------------------------------------+
 #property copyright "PremGoldAdvisor"
 #property strict
@@ -77,28 +77,26 @@ public:
       const double ask = SymbolInfoDouble(m_sym.SymbolName(), SYMBOL_ASK);
       const double bid = SymbolInfoDouble(m_sym.SymbolName(), SYMBOL_BID);
 
-      // Buy touch: Ask reaches/crosses buy entry level
       if(m_risk.EnableBuy() && !plan.buyTriggered)
       {
          if(ask + 1.0e-12 >= plan.buyEntryLevel)
          {
             if(CanTriggerDirection(PGA_DIR_BUY, plan))
             {
-               TryOpen(PGA_DIR_BUY, plan.buyEntryLevel, plan);
+               TryStartSequence(PGA_DIR_BUY, plan.buyEntryLevel, plan);
                m_candle.SetPlan(plan);
-               return; // refresh plan next tick after state change
+               return;
             }
          }
       }
 
-      // Sell touch: Bid reaches/crosses sell entry level
       if(m_risk.EnableSell() && !plan.sellTriggered)
       {
          if(bid <= plan.sellEntryLevel + 1.0e-12)
          {
             if(CanTriggerDirection(PGA_DIR_SELL, plan))
             {
-               TryOpen(PGA_DIR_SELL, plan.sellEntryLevel, plan);
+               TryStartSequence(PGA_DIR_SELL, plan.sellEntryLevel, plan);
                m_candle.SetPlan(plan);
             }
          }
@@ -122,10 +120,9 @@ private:
          }
       }
 
-      // One basket per direction per candle
       if(m_baskets.HasActiveBasketForCandle(plan.candleTime, dir))
       {
-         PGA_LogWarn("Duplicate basket prevented for candle direction");
+         PGA_LogWarn("Duplicate sequence prevented for candle direction");
          return false;
       }
 
@@ -138,9 +135,8 @@ private:
       return true;
    }
 
-   void TryOpen(const ENUM_PGA_DIRECTION dir, const double entryLevel, PGA_CandlePlan &plan)
+   void TryStartSequence(const ENUM_PGA_DIRECTION dir, const double entryLevel, PGA_CandlePlan &plan)
    {
-      // Mark trigger immediately to enforce one-shot per candle/direction
       if(dir == PGA_DIR_BUY)
       {
          plan.buyTriggered = true;
@@ -153,26 +149,25 @@ private:
       }
       m_candle.SaveState(m_baskets.Magic());
 
-      PGA_LogInfo((dir == PGA_DIR_BUY ? "BUY" : "SELL") +
-                  " entry level touched @ " +
+      const string dirLabel = (dir == PGA_DIR_BUY) ? "BUY" : "SELL";
+      PGA_LogInfo(dirLabel + " entry level touched @ " +
                   DoubleToString(entryLevel, m_sym.Digits()) +
-                  " market Ask=" + DoubleToString(SymbolInfoDouble(m_sym.SymbolName(), SYMBOL_ASK), m_sym.Digits()) +
-                  " Bid=" + DoubleToString(SymbolInfoDouble(m_sym.SymbolName(), SYMBOL_BID), m_sym.Digits()));
+                  " → opening " + dirLabel + " #1 ONLY (sequential mode)");
 
       PGA_Basket basket;
-      if(!m_baskets.CreateBasket(plan.candleTime, dir, entryLevel, m_tpDist,
-                                 m_initialSLDistance, m_breakEvenBuffer, *m_sym, basket))
+      if(!m_baskets.CreateSequence(plan.candleTime, dir, entryLevel, m_tpDist,
+                                   m_initialSLDistance, m_breakEvenBuffer, *m_sym, basket))
       {
-         PGA_LogError("Failed to create basket structure");
+         PGA_LogError("Failed to create sequence structure");
          return;
       }
 
-      if(!m_exec.OpenBasketPositions(basket))
+      // Open STAGE 1 only — never loop 1..5
+      if(!m_exec.OpenStageOrder(basket, 1))
       {
-         PGA_LogError("Basket open failed id=" + IntegerToString((long)basket.id));
-         // Keep trigger flag true to avoid repeated attempts on same candle after hard failures.
-         // Remove empty basket slot.
+         PGA_LogError("Failed to open " + dirLabel + " #1");
          basket.state = PGA_BASKET_DONE;
+         basket.stage = PGA_STAGE_COMPLETE;
          basket.inUse = true;
          m_baskets.UpdateStored(basket);
          return;

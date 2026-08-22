@@ -9,8 +9,8 @@
 //+------------------------------------------------------------------+
 #property copyright "PremGoldAdvisor"
 #property link      ""
-#property version   "1.40"
-#property description "PremGoldAdvisor V1.4 — XAUUSD M5 entry-level basket EA"
+#property version   "1.41"
+#property description "PremGoldAdvisor V1.4 — sequential TP chain (1 order at a time)"
 #property description "NOT financial advice. No guaranteed profits. Backtest first."
 #property strict
 
@@ -29,7 +29,7 @@
 //| Inputs                                                           |
 //+------------------------------------------------------------------+
 input group "=== General ==="
-input string            InpTradeSymbol        = "XAUUSD";           // Trade symbol (empty = chart symbol)
+input string            InpTradeSymbol        = "";                 // Trade symbol (empty = chart symbol, e.g. XAUUSDm)
 input ENUM_TIMEFRAMES   InpTimeframe          = PERIOD_M5;          // Working timeframe
 input long              InpMagicNumber        = 140001;             // Magic number
 input double            InpLotSize            = 0.01;               // Lot size per order
@@ -55,7 +55,7 @@ input double            InpInitialSLDistance  = 5.00;               // Initial S
 input double            InpBreakEvenBuffer    = 0.10;               // Break-even buffer after TP1
 
 input group "=== Risk Filters ==="
-input double            InpMaxSpread          = 0.50;               // Max spread (price); 0 = off
+input double            InpMaxSpread          = 0.0;                // Max spread (price); 0 = off
 input bool              InpUseSessionFilter   = false;              // Enable session filter
 input int               InpSessionStartHour   = 1;                  // Session start hour (server)
 input int               InpSessionEndHour     = 23;                 // Session end hour (server)
@@ -148,6 +148,8 @@ int OnInit()
    if(!PGA_ValidateInputs())
       return INIT_PARAMETERS_INCORRECT;
 
+   // Always prefer the chart/tester symbol unless user overrides with a valid name.
+   // Brokers often use XAUUSDm / GOLD / XAUUSD.s — hardcoding XAUUSD breaks the tester.
    g_symbolName = InpTradeSymbol;
    StringTrimLeft(g_symbolName);
    StringTrimRight(g_symbolName);
@@ -155,7 +157,16 @@ int OnInit()
       g_symbolName = _Symbol;
 
    if(!g_symbol.Init(g_symbolName))
-      return INIT_FAILED;
+   {
+      PGA_LogWarn("Symbol '" + g_symbolName + "' failed — falling back to chart symbol " + _Symbol);
+      g_symbolName = _Symbol;
+      if(!g_symbol.Init(g_symbolName))
+         return INIT_FAILED;
+   }
+
+   if(g_symbolName != _Symbol)
+      PGA_LogWarn("Trading " + g_symbolName + " while chart is " + _Symbol +
+                  ". For Strategy Tester, leave Trade symbol empty.");
 
    string volReason;
    if(!g_symbol.IsValidVolume(InpLotSize, volReason))
@@ -176,7 +187,7 @@ int OnInit()
    g_baskets.Init(g_symbolName, InpMagicNumber);
    g_candle.Init(&g_symbol, InpTimeframe, InpBuyEntryDistance, InpSellEntryDistance);
    g_exec.Init(&g_symbol, InpMagicNumber, InpMaxSlippagePoints, InpLotSize);
-   g_manager.Init(&g_symbol, &g_exec, &g_baskets);
+   g_manager.Init(&g_symbol, &g_exec, &g_baskets, &g_risk);
    g_entry.Init(&g_symbol, &g_risk, &g_candle, &g_baskets, &g_exec,
                 InpAllowBothDirections,
                 InpTP1Distance, InpTP2Distance, InpTP3Distance,
@@ -197,7 +208,8 @@ int OnInit()
 
    PGA_LogInfo("PremGoldAdvisor V1.4 ready on " + g_symbolName +
                " TF=" + EnumToString(InpTimeframe) +
-               " magic=" + IntegerToString(InpMagicNumber));
+               " magic=" + IntegerToString(InpMagicNumber) +
+               " mode=SEQUENTIAL (max 1 open order per direction)");
    return INIT_SUCCEEDED;
 }
 

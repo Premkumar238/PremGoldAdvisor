@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| PGA_Basket.mqh — basket registry and position tagging            |
+//| PGA_Basket.mqh — sequential sequence registry                    |
 //+------------------------------------------------------------------+
 #property copyright "PremGoldAdvisor"
 #property strict
@@ -23,21 +23,30 @@ private:
       b.id = 0;
       b.candleTime = 0;
       b.direction = PGA_DIR_BUY;
-      b.entryPrice = 0.0;
-      b.initialSL = 0.0;
-      b.breakEvenPrice = 0.0;
-      b.currentTrailSL = 0.0;
-      b.highestTPHit = 0;
+      b.triggerEntryLevel = 0.0;
+      b.initialSLDistance = 0.0;
+      b.breakEvenBuffer = 0.0;
+      b.stage = PGA_STAGE_NONE;
+      b.activeTicket = 0;
+      b.activeEntry = 0.0;
+      b.activeTP = 0.0;
+      b.activeSL = 0.0;
+      b.activeBreakEven = 0.0;
+      b.breakEvenApplied = false;
+      b.waitingNextOpen = false;
       b.state = PGA_BASKET_INACTIVE;
       b.inUse = false;
       for(int t = 0; t <= PGA_LEGS_PER_BASKET; t++)
-         b.tp[t] = 0.0;
+         b.tpDistance[t] = 0.0;
       for(int i = 0; i <= PGA_LEGS_PER_BASKET; i++)
       {
          b.legs[i].ticket = 0;
          b.legs[i].slot = i;
+         b.legs[i].entryPrice = 0.0;
          b.legs[i].takeProfit = 0.0;
+         b.legs[i].stopLoss = 0.0;
          b.legs[i].closed = true;
+         b.legs[i].opened = false;
       }
    }
 
@@ -81,8 +90,21 @@ public:
 
    static ulong MakeBasketId(const datetime candleTime, const ENUM_PGA_DIRECTION dir)
    {
-      // Unique per candle + direction
       return (ulong)candleTime * 10UL + (ulong)dir + 1UL;
+   }
+
+   static string StageName(const ENUM_PGA_STAGE stage)
+   {
+      switch(stage)
+      {
+         case PGA_STAGE_1:        return "STAGE_1";
+         case PGA_STAGE_2:        return "STAGE_2";
+         case PGA_STAGE_3:        return "STAGE_3";
+         case PGA_STAGE_4:        return "STAGE_4";
+         case PGA_STAGE_5:        return "STAGE_5";
+         case PGA_STAGE_COMPLETE: return "COMPLETE";
+         default:                 return "NONE";
+      }
    }
 
    int FindIndexById(const ulong basketId) const
@@ -125,69 +147,52 @@ public:
       return (m_baskets[idx].state == PGA_BASKET_ACTIVE || m_baskets[idx].state == PGA_BASKET_DONE);
    }
 
-   bool CreateBasket(const datetime candleTime,
-                     const ENUM_PGA_DIRECTION dir,
-                     const double entryPrice,
-                     const double &tpDistances[],
-                     const double initialSLDistance,
-                     const double breakEvenBuffer,
-                     const CPGASymbol &sym,
-                     PGA_Basket &outBasket)
+   // Create sequence shell only — does NOT open any orders.
+   bool CreateSequence(const datetime candleTime,
+                       const ENUM_PGA_DIRECTION dir,
+                       const double triggerLevel,
+                       const double &tpDistances[],
+                       const double initialSLDistance,
+                       const double breakEvenBuffer,
+                       const CPGASymbol &sym,
+                       PGA_Basket &outBasket)
    {
       ClearBasket(outBasket);
 
       const int idx = AllocateSlot();
       if(idx < 0)
       {
-         PGA_LogError("No free basket slots");
+         PGA_LogError("No free sequence slots");
          return false;
       }
 
       outBasket.id = MakeBasketId(candleTime, dir);
       outBasket.candleTime = candleTime;
       outBasket.direction = dir;
-      outBasket.entryPrice = sym.NormalizePrice(entryPrice);
-      outBasket.highestTPHit = 0;
+      outBasket.triggerEntryLevel = sym.NormalizePrice(triggerLevel);
+      outBasket.initialSLDistance = initialSLDistance;
+      outBasket.breakEvenBuffer = breakEvenBuffer;
+      outBasket.stage = PGA_STAGE_NONE;
+      outBasket.activeTicket = 0;
+      outBasket.waitingNextOpen = false;
+      outBasket.breakEvenApplied = false;
       outBasket.state = PGA_BASKET_ACTIVE;
       outBasket.inUse = true;
 
-      if(dir == PGA_DIR_BUY)
-      {
-         for(int s = 1; s <= PGA_LEGS_PER_BASKET; s++)
-            outBasket.tp[s] = sym.NormalizePrice(outBasket.entryPrice + tpDistances[s]);
-
-         outBasket.initialSL = (initialSLDistance > 0.0)
-                               ? sym.NormalizePrice(outBasket.entryPrice - initialSLDistance)
-                               : 0.0;
-         outBasket.breakEvenPrice = sym.NormalizePrice(outBasket.entryPrice + breakEvenBuffer);
-      }
-      else
-      {
-         for(int s = 1; s <= PGA_LEGS_PER_BASKET; s++)
-            outBasket.tp[s] = sym.NormalizePrice(outBasket.entryPrice - tpDistances[s]);
-
-         outBasket.initialSL = (initialSLDistance > 0.0)
-                               ? sym.NormalizePrice(outBasket.entryPrice + initialSLDistance)
-                               : 0.0;
-         outBasket.breakEvenPrice = sym.NormalizePrice(outBasket.entryPrice - breakEvenBuffer);
-      }
-
-      outBasket.currentTrailSL = outBasket.initialSL;
-
       for(int s = 1; s <= PGA_LEGS_PER_BASKET; s++)
       {
+         outBasket.tpDistance[s] = tpDistances[s];
          outBasket.legs[s].slot = s;
-         outBasket.legs[s].takeProfit = outBasket.tp[s];
+         outBasket.legs[s].closed = true;
+         outBasket.legs[s].opened = false;
          outBasket.legs[s].ticket = 0;
-         outBasket.legs[s].closed = false;
       }
 
       m_baskets[idx] = outBasket;
-      PGA_LogInfo("Basket created id=" + IntegerToString((long)outBasket.id) +
+      PGA_LogInfo("Sequence created id=" + IntegerToString((long)outBasket.id) +
                   " dir=" + (dir == PGA_DIR_BUY ? "BUY" : "SELL") +
-                  " entry=" + DoubleToString(outBasket.entryPrice, sym.Digits()) +
-                  " initSL=" + DoubleToString(outBasket.initialSL, sym.Digits()) +
-                  " BE=" + DoubleToString(outBasket.breakEvenPrice, sym.Digits()));
+                  " trigger=" + DoubleToString(outBasket.triggerEntryLevel, sym.Digits()) +
+                  " mode=SEQUENTIAL (max 1 open order)");
       return true;
    }
 
@@ -198,34 +203,15 @@ public:
          m_baskets[idx] = basket;
    }
 
-   void MarkDoneIfComplete(PGA_Basket &basket)
+   void MarkComplete(PGA_Basket &basket)
    {
-      bool anyOpen = false;
-      for(int s = 1; s <= PGA_LEGS_PER_BASKET; s++)
-      {
-         if(!basket.legs[s].closed)
-         {
-            anyOpen = true;
-            break;
-         }
-      }
-      if(!anyOpen)
-      {
-         basket.state = PGA_BASKET_DONE;
-         PGA_LogInfo("Basket complete id=" + IntegerToString((long)basket.id));
-      }
+      basket.stage = PGA_STAGE_COMPLETE;
+      basket.state = PGA_BASKET_DONE;
+      basket.activeTicket = 0;
+      basket.waitingNextOpen = false;
+      PGA_LogInfo((basket.direction == PGA_DIR_BUY ? "Buy" : "Sell") +
+                  " sequence complete id=" + IntegerToString((long)basket.id));
       UpdateStored(basket);
-   }
-
-   void ReleaseDoneBaskets(void)
-   {
-      for(int i = 0; i < PGA_MAX_BASKETS; i++)
-      {
-         if(m_baskets[i].inUse && m_baskets[i].state == PGA_BASKET_DONE)
-         {
-            // Keep DONE briefly for duplicate protection within same candle; clear older ones later
-         }
-      }
    }
 
    void ClearFinishedExceptCurrentCandle(const datetime currentCandle)
@@ -258,6 +244,29 @@ public:
          return false;
       out = m_baskets[index];
       return out.inUse;
+   }
+
+   // Count currently open EA positions for this sequence (must be 0 or 1)
+   int CountOpenPositionsForBasket(const ulong basketId) const
+   {
+      int n = 0;
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+      {
+         const ulong t = PositionGetTicket(i);
+         if(t == 0 || !PositionSelectByTicket(t))
+            continue;
+         if(PositionGetInteger(POSITION_MAGIC) != m_magic)
+            continue;
+         if(PositionGetString(POSITION_SYMBOL) != m_symbol)
+            continue;
+         ulong id = 0;
+         int slot = 0;
+         if(!ParseComment(PositionGetString(POSITION_COMMENT), id, slot))
+            continue;
+         if(id == basketId)
+            n++;
+      }
+      return n;
    }
 };
 
