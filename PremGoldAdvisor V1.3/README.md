@@ -2,7 +2,7 @@
 
 MetaTrader 5 Expert Advisor for **XAUUSD** on the **M5** timeframe.
 
-**Breakout touch entries:** on each new M5 candle the EA only calculates Buy/Sell entry levels, then waits. It opens a side only when that level is touched (no immediate orders on the open).
+**Breakout touch entries:** on each new M5 candle the EA only calculates Buy/Sell entry levels, then waits. It opens **one** order when that level is touched, then adds the next order only after the previous TP is locked.
 
 Compile `PremGoldAdvisorV1.3.mq5` in MetaEditor (F7) to produce `PremGoldAdvisorV1.3.ex5`.
 
@@ -26,32 +26,36 @@ This EA does **not** guarantee profit. Backtest and forward-test on demo with re
 
 Example: Open `3400` → Buy `3402`, Sell `3398` (with distance `2.00`).
 
-**Entries**
+**Entries (one order at a time)**
 
 | Event | Action |
 |---|---|
-| Ask reaches Buy level | Open **5 Buy** orders (TP1–TP5) |
-| Buy level never touched | No Buy orders that candle |
-| Bid reaches Sell level | Open **5 Sell** orders (TP1–TP5) |
-| Sell level never touched | No Sell orders that candle |
+| Ask reaches Buy level | Open **1 Buy** (not 5) |
+| Buy TP1 touched | Move remaining SL → **TP1**, then open Buy #2 |
+| Buy TP2 touched | Move remaining SL → **TP2**, then open Buy #3 |
+| Buy TP3 / TP4 | Same: lock SL at that TP, then open the next order |
+| Buy TP5 touched | Ladder complete (orders close at TP5) |
+| Bid reaches Sell level | Same sequence on the Sell side |
 
-Each side triggers at most **once per candle**. Baskets are managed independently.
+Each side **starts** at most once per candle. Extra orders are added only after the previous TP is locked. New add-on orders use SL at the last locked TP so they are scratch if price returns.
 
 `AllowBothDirections`:
 
 - `true` — Buy and Sell may both trigger on the same candle
 - `false` — after one side triggers, the other is blocked for that candle
 
-**Trailing ladder**
+**Trailing / scale-in ladder**
 
-- At open: **Initial SL** (or none if `InitialSL = 0` — unlimited risk warning logged)
-- After **TP1**: close TP1 ticket; remaining SL → **net break-even** (+ `BreakEvenBuffer`, optional spread/commission)
-- After **TP2**: remaining SL → TP1
-- After **TP3**: remaining SL → TP2
-- After **TP4**: remaining SL → TP3
-- After **TP5**: basket complete
+- At first open: **Initial SL** (or none if `InitialSL = 0` — unlimited risk warning logged)
+- After **TP1**: remaining SL → **TP1**, then open order 2
+- After **TP2**: remaining SL → **TP2**, then open order 3
+- After **TP3**: remaining SL → **TP3**, then open order 4
+- After **TP4**: remaining SL → **TP4**, then open order 5
+- After **TP5**: ladder complete
 
 SL only moves in the protective direction (never backward).
+
+This does **not** remove all loss: if price never reaches TP1, the first order can still hit the initial SL. Broker min-stop distance can delay the TP lock. Add-on fills can still lose a small amount to spread/slippage.
 
 ## Key inputs
 
@@ -61,8 +65,9 @@ SL only moves in the protective direction (never backward).
 | Sell entry distance | 2.00 | Below M5 open |
 | Allow both directions | true | Independent Buy/Sell triggers |
 | Enable Buy / Enable Sell | true | Per-side master switches |
-| TP1…TP5 | 0.50 … 2.50 | From fill price |
-| Initial SL | 5.00 | Protective; `0` = none (unlimited risk) |
+| TP1…TP5 | 0.50 … 2.50 | From first fill; lock + scale-in rungs |
+| Initial SL | 5.00 | On the first order only; `0` = none (unlimited risk) |
+| Scale in on TP | true | Open next order only after previous TP is locked |
 | Break-even buffer | 0.10 | Extra cushion past net BE |
 | Compensate spread at BE | true | Cover spread at TP1 trail |
 | Max active baskets | 2 | Concurrent Buy/Sell baskets |

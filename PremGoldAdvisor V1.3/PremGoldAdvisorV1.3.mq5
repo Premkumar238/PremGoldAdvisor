@@ -1,12 +1,12 @@
 //+------------------------------------------------------------------+
 //|                                       PremGoldAdvisorV1.3.mq5    |
 //|                         PremGoldAdvisor V1.3                     |
-//|  XAUUSD M5 breakout ladder: arm levels → open 5 on touch         |
+//|  XAUUSD M5 breakout: arm levels → 1 order, then scale on each TP |
 //+------------------------------------------------------------------+
 #property copyright "PremGoldAdvisor V1.3"
 #property link      ""
-#property version   "3.30"
-#property description "PremGoldAdvisorV1.3 — On each M5 candle arms Buy (above open) and Sell (below open) entry levels, then opens that side's 5 orders only when the level is touched. Protective initial SL; after TP1 trails remaining to net break-even. For testing/risk management — does not guarantee profit."
+#property version   "3.40"
+#property description "PremGoldAdvisorV1.3 — On each M5 candle arms Buy/Sell levels, then opens 1 order on touch. After TP1 locks SL at TP1 and opens order 2; after TP2 locks SL at TP2 and opens order 3; same through TP5. Does not guarantee profit — initial SL can still be hit before TP1."
 
 #include <Trade/Trade.mqh>
 
@@ -57,10 +57,11 @@ input double            InpTp4                   = 2.00;        // TP4 distance 
 input double            InpTp5                   = 2.50;        // TP5 distance from fill
 
 input group "=== Stop Loss / Trail ==="
-input double            InpInitialSl             = 5.00;        // Initial SL distance (0 = NONE — unlimited risk)
-input bool              InpTrailEnabled          = true;        // Enable TP-step trailing SL
-input double            InpBreakEvenBuffer       = 0.10;        // Extra price buffer past break-even
-input bool              InpBeCompensateSpread    = true;        // Net BE: cover current spread at TP1 trail
+input double            InpInitialSl             = 5.00;        // Initial SL on first order (0 = NONE — unlimited risk)
+input bool              InpTrailEnabled          = true;        // After TPn lock remaining SL at TPn
+input bool              InpScaleInOnTp           = true;        // Open next order only after previous TP is touched
+input double            InpBreakEvenBuffer       = 0.10;        // Extra price buffer if interim BE is used
+input bool              InpBeCompensateSpread    = true;        // Cover spread if interim BE is applied
 input double            InpCommissionPerLot      = 0.0;         // Round-turn commission per 1.0 lot (account ccy)
 input int               InpBreakevenExtraPoints  = 0;           // Extra points beyond net BE + buffer
 
@@ -119,8 +120,10 @@ double   g_sellTrailSl = 0.0;     // current trailing SL reference (Sell)
 
 int      g_buyHitLevel  = 0;
 int      g_sellHitLevel = 0;
-int      g_buyTrailTo   = 0;      // 0=none, 1=net BE, 2=TP1, ...
+int      g_buyTrailTo   = 0;      // 0=none, 1=SL@TP1, 2=SL@TP2, ...
 int      g_sellTrailTo  = 0;
+int      g_buyOpenedLevel  = 0;   // last order opened on buy ladder (0=none, 1..5)
+int      g_sellOpenedLevel = 0;
 
 bool     g_paused      = false;
 bool     g_flattening  = false;
@@ -201,6 +204,8 @@ void OnTick()
      }
 
    ManageOpenLadders();
+   ResetSideIfFlat(true);
+   ResetSideIfFlat(false);
 
    bool newBar = IsNewBar();
    if(newBar)
@@ -208,6 +213,12 @@ void OnTick()
 
    if(!g_paused && InpTradeEnabled && g_levelsArmed)
       TryTriggerSides();
+
+   if(!g_paused && InpTradeEnabled && InpScaleInOnTp)
+     {
+      TryScaleInSide(true);
+      TryScaleInSide(false);
+     }
 
    if(InpShowLevels)
       DrawLevels();
@@ -467,7 +478,7 @@ bool CanOpenSide(const bool isBuy)
      }
 
    int openCount = CountOurPositions();
-   if(InpMaxOpenPositions > 0 && openCount + LEVELS > InpMaxOpenPositions)
+   if(InpMaxOpenPositions > 0 && openCount + 1 > InpMaxOpenPositions)
      {
       g_blockReason = "Max open positions cap";
       return false;
@@ -537,33 +548,33 @@ void OpenSideBasket(const bool isBuy)
       g_buyTrailSl = g_buySlInit;
       g_buyHitLevel = 0;
       g_buyTrailTo  = 0;
+      g_buyOpenedLevel = 0;
 
-      for(int lvl = 1; lvl <= LEVELS; lvl++)
+      double sl = g_buySlInit;
+      double tp = g_buyTp[LEVELS];   // run to TP5; TPs 1-4 are lock + scale-in levels
+      if(!ValidateStops(true, ask, sl, tp))
         {
-         double sl = g_buySlInit;
-         double tp = g_buyTp[lvl];
-         if(!ValidateStops(true, ask, sl, tp))
-           {
-            g_blockReason = StringFormat("Buy%d stops invalid vs broker min distance", lvl);
-            if(InpLogActions)
-               Print("PremGoldAdvisorV1.3 ", g_blockReason);
-            continue;
-           }
-         if(OpenMarket(true, lot, sl, tp, lvl, g_buyBasketId))
-            opened++;
+         g_blockReason = "Buy1 stops invalid vs broker min distance";
+         if(InpLogActions)
+            Print("PremGoldAdvisorV1.3 ", g_blockReason);
         }
+      else if(OpenMarket(true, lot, sl, tp, 1, g_buyBasketId))
+         opened = 1;
 
-      g_buyOpenedBar = barTime;
-      // Refresh reference entry from fills if available
-      double avg = AverageOpenPrice(true);
-      if(avg > 0.0)
+      if(opened > 0)
         {
-         g_buyEntry = avg;
-         RebuildTpFromEntry(true, g_buyEntry);
-         if(dSl > 0.0)
+         g_buyOpenedBar = barTime;
+         g_buyOpenedLevel = 1;
+         double avg = AverageOpenPrice(true);
+         if(avg > 0.0)
            {
-            g_buySlInit = NormalizePrice(g_buyEntry - dSl);
-            g_buyTrailSl = g_buySlInit;
+            g_buyEntry = avg;
+            RebuildTpFromEntry(true, g_buyEntry);
+            if(dSl > 0.0)
+              {
+               g_buySlInit = NormalizePrice(g_buyEntry - dSl);
+               g_buyTrailSl = g_buySlInit;
+              }
            }
         }
      }
@@ -580,40 +591,43 @@ void OpenSideBasket(const bool isBuy)
       g_sellTrailSl = g_sellSlInit;
       g_sellHitLevel = 0;
       g_sellTrailTo  = 0;
+      g_sellOpenedLevel = 0;
 
-      for(int lvl = 1; lvl <= LEVELS; lvl++)
+      double sl = g_sellSlInit;
+      double tp = g_sellTp[LEVELS];
+      if(!ValidateStops(false, bid, sl, tp))
         {
-         double sl = g_sellSlInit;
-         double tp = g_sellTp[lvl];
-         if(!ValidateStops(false, bid, sl, tp))
-           {
-            g_blockReason = StringFormat("Sell%d stops invalid vs broker min distance", lvl);
-            if(InpLogActions)
-               Print("PremGoldAdvisorV1.3 ", g_blockReason);
-            continue;
-           }
-         if(OpenMarket(false, lot, sl, tp, lvl, g_sellBasketId))
-            opened++;
+         g_blockReason = "Sell1 stops invalid vs broker min distance";
+         if(InpLogActions)
+            Print("PremGoldAdvisorV1.3 ", g_blockReason);
         }
+      else if(OpenMarket(false, lot, sl, tp, 1, g_sellBasketId))
+         opened = 1;
 
-      g_sellOpenedBar = barTime;
-      double avg = AverageOpenPrice(false);
-      if(avg > 0.0)
+      if(opened > 0)
         {
-         g_sellEntry = avg;
-         RebuildTpFromEntry(false, g_sellEntry);
-         if(dSl > 0.0)
+         g_sellOpenedBar = barTime;
+         g_sellOpenedLevel = 1;
+         double avg = AverageOpenPrice(false);
+         if(avg > 0.0)
            {
-            g_sellSlInit = NormalizePrice(g_sellEntry + dSl);
-            g_sellTrailSl = g_sellSlInit;
+            g_sellEntry = avg;
+            RebuildTpFromEntry(false, g_sellEntry);
+            if(dSl > 0.0)
+              {
+               g_sellSlInit = NormalizePrice(g_sellEntry + dSl);
+               g_sellTrailSl = g_sellSlInit;
+              }
            }
         }
      }
 
-   g_lastAction = StringFormat("%s touch @ %s → opened %d/5 basket#%s",
+   if(opened <= 0)
+      return;
+
+   g_lastAction = StringFormat("%s touch @ %s → opened 1/5 basket#%s (scale-in)",
                                (isBuy ? "BUY" : "SELL"),
                                DoubleToString(isBuy ? g_buyLevel : g_sellLevel, g_digits),
-                               opened,
                                IntegerToString((long)(isBuy ? g_buyBasketId : g_sellBasketId)));
    g_status = StringFormat("LIVE B%d/S%d", CountSide(true), CountSide(false));
    if(InpLogActions)
@@ -742,6 +756,130 @@ void ManageOpenLadders()
   }
 
 //+------------------------------------------------------------------+
+void ResetSideIfFlat(const bool isBuy)
+  {
+   if(CountSide(isBuy) > 0)
+      return;
+
+   int opened = isBuy ? g_buyOpenedLevel : g_sellOpenedLevel;
+   double entry = isBuy ? g_buyEntry : g_sellEntry;
+   if(opened <= 0 && entry <= 0.0)
+      return;
+
+   ResetBasketState(isBuy);
+   SaveState();
+  }
+
+//+------------------------------------------------------------------+
+void TryScaleInSide(const bool isBuy)
+  {
+   if(isBuy && !InpEnableBuy)
+      return;
+   if(!isBuy && !InpEnableSell)
+      return;
+   if(CountSide(isBuy) == 0)
+      return;
+
+   int opened = isBuy ? g_buyOpenedLevel : g_sellOpenedLevel;
+   int hit    = isBuy ? g_buyHitLevel    : g_sellHitLevel;
+   int trail  = isBuy ? g_buyTrailTo     : g_sellTrailTo;
+   if(opened <= 0 || opened >= LEVELS)
+      return;
+   if(hit >= LEVELS || trail >= LEVELS)
+      return; // move already complete — do not add at the top
+   // Only add the next ticket after the last opened order's TP is locked (no catch-up pile-up)
+   if(hit < opened || trail != opened)
+      return;
+
+   if(!IsTradingHour())
+     {
+      g_blockReason = "Outside trading hours";
+      return;
+     }
+   if(SpreadTooWide())
+     {
+      g_blockReason = "Spread too wide";
+      return;
+     }
+   if(InpMaxOpenPositions > 0 && CountOurPositions() + 1 > InpMaxOpenPositions)
+     {
+      g_blockReason = "Max open positions cap";
+      return;
+     }
+
+   double lot = NormalizeLot(InpLotSize);
+   if(lot <= 0.0)
+      return;
+
+   ulong basketId = isBuy ? g_buyBasketId : g_sellBasketId;
+   if(basketId == 0)
+      basketId = AllocateBasketId(g_armedBarTime, isBuy);
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(ask <= 0.0 || bid <= 0.0)
+      return;
+
+   if(isBuy)
+     {
+      if(g_buyTp[LEVELS] > 0.0 && (bid >= g_buyTp[LEVELS] || ask >= g_buyTp[LEVELS]))
+         return;
+     }
+   else
+     {
+      if(g_sellTp[LEVELS] > 0.0 && (ask <= g_sellTp[LEVELS] || bid <= g_sellTp[LEVELS]))
+         return;
+     }
+
+   int next = opened + 1;
+   // New order SL = last locked TP so the add is scratch if price returns
+   double sl = isBuy ? g_buyTp[trail] : g_sellTp[trail];
+   double tp = isBuy ? g_buyTp[LEVELS] : g_sellTp[LEVELS];
+   double price = isBuy ? ask : bid;
+   if(sl <= 0.0 || tp <= 0.0)
+      return;
+
+   // Do not chase: only add while price is still near the lock (within one TP step)
+   double maxAway = DistToPrice(InpTp1) + MinStopDistance();
+   if(isBuy && (price - sl) > maxAway)
+      return;
+   if(!isBuy && (sl - price) > maxAway)
+      return;
+
+   if(!ValidateStops(isBuy, price, sl, tp))
+     {
+      g_blockReason = StringFormat("%s%d scale-in stops invalid", isBuy ? "Buy" : "Sell", next);
+      return;
+     }
+
+   if(!OpenMarket(isBuy, lot, sl, tp, next, basketId))
+      return;
+
+   if(isBuy)
+     {
+      g_buyOpenedLevel = next;
+      if(g_buyBasketId == 0)
+         g_buyBasketId = basketId;
+     }
+   else
+     {
+      g_sellOpenedLevel = next;
+      if(g_sellBasketId == 0)
+         g_sellBasketId = basketId;
+     }
+
+   g_lastAction = StringFormat("%s TP%d locked → opened order %d/5 @ %s SL@TP%d",
+                               isBuy ? "BUY" : "SELL",
+                               trail, next,
+                               DoubleToString(price, g_digits),
+                               trail);
+   g_status = StringFormat("LIVE B%d/S%d", CountSide(true), CountSide(false));
+   if(InpLogActions)
+      Print("PremGoldAdvisorV1.3 ", g_lastAction);
+   SaveState();
+  }
+
+//+------------------------------------------------------------------+
 void DetectTpHits(const bool isBuy)
   {
    if(CountSide(isBuy) == 0 && (isBuy ? g_buyTrailTo : g_sellTrailTo) <= 0)
@@ -796,7 +934,7 @@ void ApplyTrailSide(const bool isBuy)
    if(hit <= 0)
       return;
 
-   int desiredStep = hit;   // 1=net BE, 2=SL@TP1, ...
+   int desiredStep = hit;   // 1=SL@TP1, 2=SL@TP2, ...
    int applied = isBuy ? g_buyTrailTo : g_sellTrailTo;
    if(desiredStep <= applied)
       return;
@@ -804,14 +942,13 @@ void ApplyTrailSide(const bool isBuy)
    for(int step = applied + 1; step <= desiredStep; step++)
      {
       string action;
-      if(step == 1)
-         action = StringFormat("%s TP1 — remaining SL -> net BE", isBuy ? "BUY" : "SELL");
-      else if(step >= LEVELS)
-         action = StringFormat("%s TP%d — basket complete", isBuy ? "BUY" : "SELL", step);
+      if(step >= LEVELS)
+         action = StringFormat("%s TP%d — ladder complete", isBuy ? "BUY" : "SELL", step);
       else
-         action = StringFormat("%s TP%d — remaining SL -> TP%d", isBuy ? "BUY" : "SELL", step, step - 1);
+         action = StringFormat("%s TP%d — remaining SL -> TP%d, then scale-in order %d",
+                               isBuy ? "BUY" : "SELL", step, step, step + 1);
 
-      // Step 5: final order closes on its own broker TP — just mark trail done
+      // Final TP: remaining tickets close on broker TP — just mark trail done
       if(step >= LEVELS)
         {
          if(isBuy)
@@ -843,16 +980,9 @@ void ApplyTrailSide(const bool isBuy)
 //+------------------------------------------------------------------+
 double TrailTargetPrice(const bool isBuy, const int step)
   {
-   if(step <= 0)
+   if(step <= 0 || step >= LEVELS)
       return 0.0;
-
-   if(step == 1)
-      return 0.0; // computed per-position in MoveRemainingStopsOnSide (net BE)
-
-   int tpIndex = step - 1;
-   if(tpIndex < 1 || tpIndex > LEVELS)
-      return 0.0;
-   return isBuy ? g_buyTp[tpIndex] : g_sellTp[tpIndex];
+   return isBuy ? g_buyTp[step] : g_sellTp[step];
   }
 
 //+------------------------------------------------------------------+
@@ -951,11 +1081,7 @@ bool MoveRemainingStopsOnSide(const bool isBuy, const int step,
       double open = PositionGetDouble(POSITION_PRICE_OPEN);
       double vol = PositionGetDouble(POSITION_VOLUME);
 
-      double posTarget;
-      if(step == 1)
-         posTarget = NetBreakEvenSL(isBuy, open, vol);
-      else
-         posTarget = NormalizePrice(sharedTarget);
+      double posTarget = NormalizePrice(sharedTarget);
 
       // Never move SL backward (only increase protection)
       if(StopAlreadyAtOrBeyond(isBuy, sl, posTarget))
@@ -966,6 +1092,11 @@ bool MoveRemainingStopsOnSide(const bool isBuy, const int step,
 
       if(!CanPlaceStop(isBuy, posTarget))
         {
+         // Price is still too close to TPn for the broker min-stop.
+         // Lock at net BE first so order 1 cannot fall back to the initial SL.
+         double be = NetBreakEvenSL(isBuy, open, vol);
+         if(be > 0.0 && !StopAlreadyAtOrBeyond(isBuy, sl, be) && CanPlaceStop(isBuy, be))
+            g_trade.PositionModify(ticket, be, tp);
          allOk = false;
          continue;
         }
@@ -1172,6 +1303,32 @@ int CountSide(const bool isBuy)
   }
 
 //+------------------------------------------------------------------+
+int HighestLevelOnSide(const bool isBuy)
+  {
+   int best = 0;
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(!PositionSelectByTicket(ticket))
+         continue;
+      if(!IsOurPosition())
+         continue;
+      long type = PositionGetInteger(POSITION_TYPE);
+      if(isBuy && type != POSITION_TYPE_BUY)
+         continue;
+      if(!isBuy && type != POSITION_TYPE_SELL)
+         continue;
+      int lvl = ParseLevelFromComment(PositionGetString(POSITION_COMMENT));
+      if(lvl > best)
+         best = lvl;
+     }
+   return best;
+  }
+
+//+------------------------------------------------------------------+
 double AverageOpenPrice(const bool isBuy)
   {
    double sum = 0.0;
@@ -1233,11 +1390,20 @@ void RecoverFromPositions()
    if(g_armedBarTime <= 0)
       g_armedBarTime = barTime;
 
-   // Prevent duplicate baskets for an already-triggered candle after restart
-   if(buys > 0 && g_buyOpenedBar <= 0)
-      g_buyOpenedBar = barTime;
-   if(sells > 0 && g_sellOpenedBar <= 0)
-      g_sellOpenedBar = barTime;
+   if(buys > 0)
+     {
+      int fromCmt = HighestLevelOnSide(true);
+      g_buyOpenedLevel = MathMax(g_buyOpenedLevel, MathMax(fromCmt, buys));
+      if(g_buyOpenedBar <= 0)
+         g_buyOpenedBar = barTime;
+     }
+   if(sells > 0)
+     {
+      int fromCmt = HighestLevelOnSide(false);
+      g_sellOpenedLevel = MathMax(g_sellOpenedLevel, MathMax(fromCmt, sells));
+      if(g_sellOpenedBar <= 0)
+         g_sellOpenedBar = barTime;
+     }
 
    g_status = StringFormat("RECOVERED B%d/S%d", buys, sells);
    if(InpLogActions)
@@ -1288,26 +1454,17 @@ void InferTrailFromStops(const bool isBuy)
       return;
 
    int step = 0;
-   double entry = isBuy ? g_buyEntry : g_sellEntry;
    double tol = g_tickSize * 2.0;
 
-   if(entry > 0.0)
-     {
-      if(isBuy && best + tol >= entry)
-         step = 1;
-      if(!isBuy && best - tol <= entry)
-         step = 1;
-     }
-
-   for(int lvl = 1; lvl <= LEVELS - 1; lvl++)
+   for(int lvl = 1; lvl <= LEVELS; lvl++)
      {
       double tp = isBuy ? g_buyTp[lvl] : g_sellTp[lvl];
       if(tp <= 0.0)
          continue;
       if(isBuy && best + tol >= tp)
-         step = MathMax(step, lvl + 1);
+         step = MathMax(step, lvl);
       if(!isBuy && best - tol <= tp)
-         step = MathMax(step, lvl + 1);
+         step = MathMax(step, lvl);
      }
 
    if(isBuy)
@@ -1353,6 +1510,7 @@ void ResetBasketState(const bool isBuy)
       g_buyTrailSl = 0.0;
       g_buyHitLevel = 0;
       g_buyTrailTo = 0;
+      g_buyOpenedLevel = 0;
       g_buyBasketId = 0;
      }
    else
@@ -1363,6 +1521,7 @@ void ResetBasketState(const bool isBuy)
       g_sellTrailSl = 0.0;
       g_sellHitLevel = 0;
       g_sellTrailTo = 0;
+      g_sellOpenedLevel = 0;
       g_sellBasketId = 0;
      }
   }
@@ -1488,6 +1647,8 @@ void SaveState()
    GlobalVariableSet(GvName("SellHit"), (double)g_sellHitLevel);
    GlobalVariableSet(GvName("BuyTrail"), (double)g_buyTrailTo);
    GlobalVariableSet(GvName("SellTrail"), (double)g_sellTrailTo);
+   GlobalVariableSet(GvName("BuyOpenedLvl"), (double)g_buyOpenedLevel);
+   GlobalVariableSet(GvName("SellOpenedLvl"), (double)g_sellOpenedLevel);
    GlobalVariableSet(GvName("BuyTrailSl"), g_buyTrailSl);
    GlobalVariableSet(GvName("SellTrailSl"), g_sellTrailSl);
    GlobalVariableSet(GvName("BuyBasketId"), (double)g_buyBasketId);
@@ -1534,6 +1695,10 @@ void LoadState()
       g_buyTrailTo = (int)GlobalVariableGet(GvName("BuyTrail"));
    if(GlobalVariableCheck(GvName("SellTrail")))
       g_sellTrailTo = (int)GlobalVariableGet(GvName("SellTrail"));
+   if(GlobalVariableCheck(GvName("BuyOpenedLvl")))
+      g_buyOpenedLevel = (int)GlobalVariableGet(GvName("BuyOpenedLvl"));
+   if(GlobalVariableCheck(GvName("SellOpenedLvl")))
+      g_sellOpenedLevel = (int)GlobalVariableGet(GvName("SellOpenedLvl"));
    if(GlobalVariableCheck(GvName("BuyTrailSl")))
       g_buyTrailSl = GlobalVariableGet(GvName("BuyTrailSl"));
    if(GlobalVariableCheck(GvName("SellTrailSl")))
@@ -1581,7 +1746,7 @@ void BuildPanel()
 
    CreateRect(g_panelPrefix + "BG", x, y, w, h, CLR_CARD);
    CreateLabel(g_panelPrefix + "TITLE", x + 12, y + 10, "PremGoldAdvisorV1.3", CLR_GOLD2, 11);
-   CreateLabel(g_panelPrefix + "SUB", x + 12, y + 30, "M5 breakout → touch to open", CLR_MUTED, 8);
+   CreateLabel(g_panelPrefix + "SUB", x + 12, y + 30, "1 order, then scale-in on each TP", CLR_MUTED, 8);
 
    CreateLabel(g_panelPrefix + "L_STATUS", x + 12, y + 54, "Status:", CLR_MUTED, 8);
    CreateLabel(g_panelPrefix + "V_STATUS", x + 78, y + 54, "-", CLR_TEXT, 8);
@@ -1624,11 +1789,11 @@ void UpdatePanel()
                                 (g_buyLevel > 0.0 ? DoubleToString(g_buyLevel, g_digits) : "-"),
                                 (g_sellLevel > 0.0 ? DoubleToString(g_sellLevel, g_digits) : "-")));
    ObjectSetString(0, g_panelPrefix + "V_POS", OBJPROP_TEXT,
-                   StringFormat("B %d / S %d", CountSide(true), CountSide(false)));
+                   StringFormat("B %d/5 | S %d/5", g_buyOpenedLevel, g_sellOpenedLevel));
    ObjectSetString(0, g_panelPrefix + "V_HIT", OBJPROP_TEXT,
                    StringFormat("Buy TP%d | Sell TP%d", g_buyHitLevel, g_sellHitLevel));
    ObjectSetString(0, g_panelPrefix + "V_TRAIL", OBJPROP_TEXT,
-                   StringFormat("Buy step %d | Sell step %d", g_buyTrailTo, g_sellTrailTo));
+                   StringFormat("Buy SL@TP%d | Sell SL@TP%d", g_buyTrailTo, g_sellTrailTo));
    ObjectSetString(0, g_panelPrefix + "V_ACT", OBJPROP_TEXT, TrimPanelText(g_lastAction, 38));
    ObjectSetString(0, g_panelPrefix + "V_BLOCK", OBJPROP_TEXT,
                    (g_blockReason == "" ? "-" : TrimPanelText(g_blockReason, 38)));

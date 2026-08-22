@@ -1,4 +1,4 @@
-; PremGoldAdvisorV1.3 — M5 breakout touch ladder (XAUUSD)
+; PremGoldAdvisorV1.3 — 1 order on touch, then scale-in after each TP lock
 InpTradeEnabled=true
 InpEnableBuy=true
 InpEnableSell=true
@@ -20,6 +20,7 @@ InpTp4=2.0
 InpTp5=2.5
 InpInitialSl=5.0
 InpTrailEnabled=true
+InpScaleInOnTp=true
 InpBreakEvenBuffer=0.1
 InpBeCompensateSpread=true
 InpCommissionPerLot=0.0
